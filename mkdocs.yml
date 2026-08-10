@@ -1,0 +1,57 @@
+site_name: BRC Pathogen Comparative Genomics Program
+site_description: Coordination plan and design docs for the comparative & population genomics program across PANTEON, ANCOR, PLAIG, and CAPHEINE.
+repo_url: https://github.com/d-callan/brc-tools
+site_url: https://d-callan.github.io/brc-tools
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - javascripts/mermaid.js
+
+nav:
+  - Home: index.md
+  - Program:
+      - Coordination Plan: program/comparative-genomics-program.md
+      - PLAIG Design: program/plaig-design.md
+      - PANTEON Reference: program/panteon-reference.md
+      - ANCOR Reference: program/ancor-reference.md
+      - CAPHEINE Updates: program/capheine-updates.md

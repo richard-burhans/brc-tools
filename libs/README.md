@@ -13,6 +13,19 @@ Lightweight library for parsing and processing genomic data formats (BED, GFF3, 
 
 See `genome-io/README.md` for details.
 
+## `lexicmap-to-ucsc`
+
+Convert LexicMap search results (TSV) to UCSC Genome Browser tracks (BED + bedGraph).
+Accepts multiple input files (e.g. one per chromosome) and produces a single set of
+output files. Pure Python, no dependencies beyond stdlib.
+
+- **PyPI**: `lexicmap-to-ucsc`
+- **Bioconda**: `lexicmap-to-ucsc`
+- **Status**: Alpha (v0.1.0)
+- **Dependencies**: None (Python stdlib only)
+
+See `lexicmap-to-ucsc/README.md` for details.
+
 ## Future: `pangenome-helpers`
 
 Orchestration logic for pangenome workflows (manifest loading, orthogroup filtering, CDS grouping, etc.). Will depend on `genome-io`.
