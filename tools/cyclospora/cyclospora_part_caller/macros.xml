@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<macros>
+    <token name="@TOOL_VERSION@">1.0.0</token>
+    <token name="@VERSION_SUFFIX@">0</token>
+    <token name="@PROFILE@">26.0</token>
+
+    <!--
+        ONE Apptainer image for the whole Cyclospora arm, declared explicitly.
+        Deliberately NOT a set of conda <requirement> entries: two or more
+        requirements resolve to a merged mulled-v1-<hash> environment, and when
+        that environment has never been built the job dies with exit 1 and a
+        completely empty stderr, which is close to undebuggable.
+        The image pins pysam 0.23.3 / numpy 2.4.6 / PyEuk @ d8e45a81.
+    -->
+    <xml name="requirements">
+        <requirements>
+            <container type="singularity">/data/containers/cyclospora-typing-1.0.0.sif</container>
+        </requirements>
+    </xml>
+
+    <!--
+        The container runs with `singularity ... contain, cleanenv, no-mount tmp`,
+        so /tmp is not writable on the compute nodes and TMPDIR arrives empty.
+        Every command block has to make its own scratch inside the job directory.
+    -->
+    <token name="@SCRATCH@"><![CDATA[
+mkdir -p wrk && export TMPDIR="\$(pwd)/wrk" &&
+]]></token>
+
+    <xml name="citations">
+        <citations>
+            <!-- Nascimento et al., CDC Cyclospora cayetanensis amplicon genotyping -->
+            <citation type="doi">10.1016/j.fawpar.2019.e00587</citation>
+            <!-- pysam / htslib -->
+            <citation type="doi">10.1093/gigascience/giab008</citation>
+        </citations>
+    </xml>
+</macros>
