@@ -1,0 +1,86 @@
+Bootstrap: docker
+From: python:3.11-slim-bookworm
+
+# Single Apptainer image backing every custom tool of the Cyclospora
+# LoFreq/PyEuk arm (per-PART haplotype caller, Mt-Junction anchor caller,
+# CDC HDS sheet writer, PyEuk distance + clustering).
+#
+# One container, no conda requirements: multiple <requirement> entries in a
+# Galaxy tool resolve to a mulled-v1-<hash> environment that may not exist, and
+# the job then dies with exit 1 and an empty stderr.
+#
+# Build (needs ~5 min and ~3 GB of scratch):
+#   sudo APPTAINER_TMPDIR=/data/containers/.tmp apptainer build \
+#        /data/containers/cyclospora-typing-1.0.0.sif cyclospora-typing.def
+#   sudo chown galaxy:galaxy /data/containers/cyclospora-typing-1.0.0.sif
+#   sudo chmod 0755          /data/containers/cyclospora-typing-1.0.0.sif
+#
+# PyEuk is pinned to d8e45a81820f28b6b3abf326e62870c346cd2890 (the last commit
+# of the binary KING-wIBS engine, package __version__ 2.1.0). Do NOT move the
+# pin to v3.x: the SNP-weighted engine regresses (AUC drops on the CDC sheets,
+# 4 of 6 sheets collapse to k=1, nulls fall from 12/12 to 10/12).
+#
+# Python dependency versions are pinned to exactly the set that produced the
+# reference label-free result on haplotype_sheet_153.txt (k=2, ARI 0.9721).
+
+%labels
+    Maintainer      BRC-Analytics
+    Name            cyclospora-typing
+    Version         1.0.0
+    Python          3.11
+    PyEuk_Repo      https://github.com/spond/pyeuk
+    PyEuk_Commit    d8e45a81820f28b6b3abf326e62870c346cd2890
+    PyEuk_Version   2.1.0
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+
+    # git is needed by pip to fetch the pinned PyEuk commit; the rest are the
+    # runtime shared libraries pysam links against.
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        git ca-certificates \
+        zlib1g libbz2-1.0 liblzma5 libcurl4 libssl3
+    rm -rf /var/lib/apt/lists/*
+
+    python -m pip install --no-cache-dir --upgrade "pip==25.3" "setuptools==80.9.0" "wheel==0.45.1"
+
+    # Exact versions of the reference run.
+    python -m pip install --no-cache-dir \
+        "numpy==2.4.6" \
+        "scipy==1.17.1" \
+        "pandas==3.0.5" \
+        "scikit-learn==1.9.0" \
+        "numba==0.67.0" \
+        "llvmlite==0.49.0" \
+        "joblib==1.5.3" \
+        "threadpoolctl==3.6.0" \
+        "pysam==0.23.3"
+
+    # PyEuk, pinned. --no-deps so its loose ">=" ranges cannot move the pins above.
+    python -m pip install --no-cache-dir --no-deps \
+        "cyclospora_pyeuk @ git+https://github.com/spond/pyeuk@d8e45a81820f28b6b3abf326e62870c346cd2890"
+
+    python -m pip cache purge || true
+    find /usr/local/lib/python3.11 -name '__pycache__' -type d -prune -exec rm -rf {} + || true
+
+%environment
+    export LC_ALL=C
+    export PYTHONNOUSERSITE=1
+    export PYTHONDONTWRITEBYTECODE=1
+    export MPLBACKEND=Agg
+    # Deliberately NOT setting TMPDIR here: Galaxy runs this image with
+    # --contain --cleanenv --no-mount tmp, and %environment is applied after
+    # --env, so a value set here would clobber the job's own scratch dir.
+    # Every tool <command> block must start with:
+    #     mkdir -p wrk && export TMPDIR="$(pwd)/wrk" &&
+
+%test
+    set -eu
+    python -c "import pysam, numpy, pandas, scipy, sklearn, numba; print('deps ok')"
+    python -c "from cyclospora_pyeuk.distance_engine import PyEukDistanceEngine; print('pyeuk ok')"
+    python -c "from cyclospora_pyeuk.clustering import CyclosporaClusterFinder; print('cluster ok')"
+
+%runscript
+    exec "$@"
