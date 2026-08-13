@@ -5,7 +5,7 @@ doc: >-
   specimens into outbreaks, end to end.
 
   Paired FASTQ per specimen -> bwa mem against the 7-amplicon marker panel ->
-  MAPQ>=20 + proper-pair filter -> coordinate sort -> two callers in parallel:
+  MAPQ>=20 + proper-pair filter -> two callers in parallel:
   per-PART haplotypes from the marker BAM, and the Mt-Junction repeat-length class
   straight from the reads -> one CDC HDS wide sheet -> PyEuk binary KING-wIBS
   distance + label-free clustering.
@@ -81,8 +81,10 @@ inputs:
 
 outputs:
   filtered_bam:
-    outputSource: sort_bam/output1
-    doc: Per-specimen marker BAM, MAPQ>=20 + proper pairs, coordinate sorted.
+    outputSource: filter_bam/outputsam
+    doc: >-
+      Per-specimen marker BAM, MAPQ>=20 + proper pairs. Coordinate sorted: bwa mem
+      runs with output_sort=coordinate and samtools view preserves record order.
   part_calls:
     outputSource: part_caller/calls
     doc: Per-specimen long-format PART haplotype calls (10 columns).
@@ -177,22 +179,6 @@ steps:
       outputsam: {}
     position: {top: 0, left: 620}
 
-  sort_bam:
-    tool_id: toolshed.g2.bx.psu.edu/repos/devteam/samtools_sort/samtools_sort/2.0.8
-    label: sort_bam
-    doc: >-
-      Coordinate sort. samtools view emits unsorted.bam whatever went in; the PART
-      caller needs a coordinate-sorted, indexable BAM to fetch reads over an
-      interval. Galaxy attaches the index as metadata, so no explicit index step.
-    in:
-      input1: filter_bam/outputsam
-    state:
-      prim_key_cond:
-        prim_key_select: ''
-      minhash: false
-    out:
-      output1: {}
-    position: {top: 0, left: 940}
 
   part_caller:
     tool_id: cyclospora_part_caller
@@ -203,7 +189,7 @@ steps:
       uses the collection element identifier. Gates at their pre-registered
       defaults (min_span 50, min_freq 0.05, min_reads 10).
     in:
-      input: sort_bam/output1
+      input: filter_bam/outputsam
       reference|markers: markers
       reference|parts: parts
       reference|known: known_haplotypes

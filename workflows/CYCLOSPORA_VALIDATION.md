@@ -333,6 +333,41 @@ gold labels were used only afterwards, to score.
 **Verdict: the port is faithful.** The workflow, run unmodified in Galaxy on all 153 benchmark
 specimens, reproduces every pre-registered target of the LoFreq/PyEuk arm.
 
+### 6.1 This workflow is now the arm's reference implementation
+
+As of 2026-08-13 the Galaxy workflow — not the shell-script pipeline under
+`/home/anton/a1-cyclospora/` — is the **authoritative source of LoFreq/PyEuk arm results**.
+The shell pipeline remains the historical reference the port was validated against, and its
+archived outputs stay in place, but new numbers should be produced and cited from Galaxy.
+
+Grounds for the switch, all verified rather than asserted:
+
+* the run is reproducible in place — a second invocation returned **byte-identical** output for
+  the sheet, the summary, the distance matrix (0 of 23,409 cells differ), the clusters, and all
+  153 per-specimen junction, PART and PART-summary files, at an identical ARI of
+  0.9737018305231459;
+* it is version-controlled, containerised and re-invocable by anyone with the history, rather
+  than depending on one operator's shell environment;
+* the aligner discrepancy in §6 was re-examined at the level that matters: across all 153
+  specimens **no called haplotype set differs**. The perturbation reaches the reported `span`
+  and the 4th decimal of `freq` and stops there. The call closest to the `min_freq` 0.05 gate
+  sits at 0.0509, a margin roughly 70× the largest perturbation the depth wobble can produce,
+  so no gate is at risk of flipping.
+
+**A redundant `samtools_sort` step was removed** on 2026-08-13 after `filter_bam` was shown to
+already emit `SO:coordinate` with a BAM index attached: `bwa mem` runs with
+`output_sort=coordinate`, and `samtools view` filters records without reordering them. The two
+BAMs were byte-identical over all 59,765 records. The workflow went 12 → 11 steps and 768 → 615
+jobs (exactly one sort job per specimen), with every output unchanged.
+
+**Known non-determinism, and how to remove it.** `bwa mem` runs without `-K`, so its chunk size
+scales with thread count and the insert-size distribution is re-estimated per chunk. A rerun at
+a different `-t` will therefore reproduce every *call* but may shift `span` by a few reads and
+`freq` in the 4th decimal, exactly as observed between the reference's `-t 2` and Galaxy's
+`-t 16`. Pinning `-K 100000000` would make depths bit-reproducible across thread counts. This
+has **not** been done, because it would change the depth column and invalidate the validation
+recorded here; it should be a deliberate follow-up with a re-validation, not a silent edit.
+
 ---
 
 ## 7. Reproducing this
