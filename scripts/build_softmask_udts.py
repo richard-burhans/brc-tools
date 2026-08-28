@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Generate the split User-Defined Tools that let the softmask workflow run on usegalaxy.org.
 
-WHY A GENERATOR AND NOT FOUR HAND-WRITTEN YAML FILES. The awk and Python helpers under `tools/`
-have to be INLINED into each UDT, because a UDT has no `$__tool_directory__`. Copying them by hand
-produces a second copy that drifts from the wrapper the moment either is edited, which is the exact
-failure `scripts/xml_to_udt.py` exists to avoid. This reads them from `tools/` at build time, so
-`tools/` stays the single source.
+WHY A GENERATOR AND NOT HAND-WRITTEN YAML FILES. The awk and Python helpers under `tools/` have to
+be INLINED into each UDT, because a UDT has no `$__tool_directory__`. Copying them by hand produces
+a second copy that drifts from the wrapper the moment either is edited.
+
+⚠ THAT IS TRUE OF THE HELPERS ONLY, AND IT IS WORTH BEING PRECISE ABOUT. The command lines, the
+container tags and the input/output declarations are hardcoded in `build()` -- a second copy of
+`tools/<tool>/<tool>.xml` by any honest reading. `--check` compares generated YAML against `udt/`,
+so on its own it CANNOT see a change made to the XML. `assert_sources_aligned()` closes the biggest
+part of that hole by asserting the command fragments this file hardcodes still appear in the XML it
+claims to mirror, and that the duplicated helper copies have not diverged from one another. It is a
+tripwire, not a derivation: only a real converter (`xml_to_udt.py`) could remove the duplication,
+and it refuses these wrappers for reasons that are correct.
 
 ⛔ WHY THE PORT IS TWO TOOLS PER MASKER RATHER THAN ONE. Each classic wrapper pipes a masker binary
 through `lc_classify.py`, so one job needs BOTH the masker's biocontainer and a Python interpreter.
@@ -27,6 +34,7 @@ which is the class of bug that does not announce itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
 import sys
 
@@ -112,6 +120,52 @@ help:
     Stage 1 of a two-step port. Emits BED3 intervals plus the uppercased FASTA they index into.
     Feed BOTH to `brc-lc-classify` to get the content-annotated BED6 the workflow expects.
 """
+
+
+#: Command fragments this file hardcodes, and the wrapper each is copied from. If an XML changes,
+#: the generated UDT silently keeps running the old command -- so assert the fragment is still there.
+XML_ANCHORS = {
+    "tools/dustmasker/dustmasker.xml": ["dustmasker -in", "-outfmt interval", "interval2bed.awk"],
+    "tools/windowmasker/windowmasker.xml": ["windowmasker -mk_counts", "windowmasker -ustat",
+                                            "-outfmt interval", "interval2bed.awk"],
+    "tools/tantan/tantan.xml": ["tantan ", "lc2bed.awk"],
+    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ANOtoBED", "ano2bed6.awk"],
+}
+
+#: Helper files duplicated across wrapper directories. They are byte-identical today; a fix applied
+#: to one copy would otherwise never reach the UDT, which reads only the first.
+DUPLICATED_HELPERS = (
+    ("tools/dustmasker/lc_classify.py", "tools/tantan/lc_classify.py",
+     "tools/windowmasker/lc_classify.py"),
+    ("tools/dustmasker/interval2bed.awk", "tools/windowmasker/interval2bed.awk"),
+)
+
+
+def assert_sources_aligned() -> None:
+    """Refuse to generate if `tools/` has moved out from under the hardcoded half of this file."""
+    for xml, anchors in XML_ANCHORS.items():
+        path = ROOT / xml
+        if not path.is_file():
+            sys.exit(f"REFUSING: {xml} is missing; this generator mirrors it.")
+        body = path.read_text(encoding="utf-8")
+        for a in anchors:
+            if a not in body:
+                sys.exit(f"REFUSING: {xml} no longer contains {a!r}, which this generator "
+                         f"hardcodes.\n  The wrapper changed and the generated UDT would silently "
+                         f"keep running the old command. Reconcile build() with the XML, then "
+                         f"regenerate.")
+    for group in DUPLICATED_HELPERS:
+        digests = {}
+        for rel in group:
+            path = ROOT / rel
+            if not path.is_file():
+                sys.exit(f"REFUSING: {rel} is missing.")
+            digests[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if len(set(digests.values())) > 1:
+            listing = "\n    ".join(f"{d[:12]}  {r}" for r, d in digests.items())
+            sys.exit(f"REFUSING: duplicated helper copies have DIVERGED:\n    {listing}\n"
+                     f"  Only the first is inlined, so the others' UDTs would ship stale logic. "
+                     f"Reconcile them first.")
 
 
 def build() -> dict[str, str]:
@@ -455,6 +509,7 @@ def main() -> int:
                     help="exit non-zero if a committed file differs from what would be generated")
     args = ap.parse_args()
 
+    assert_sources_aligned()
     UDT.mkdir(exist_ok=True)
     stale = []
     for fn, body in build().items():

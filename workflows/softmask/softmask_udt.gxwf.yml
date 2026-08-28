@@ -20,13 +20,10 @@ doc: >-
      renders an instance-resolved copy at run time. UUIDs are per-account facts and must not be
      committed.
 
-  ⛔ NOT YET INCLUDED, and each is a real gap rather than an oversight:
-    * fastan. Needs FAtoGDB and ANOtoBED (FastGA) plus FasTAN (FASTAN) -- two packages, so three
-      chained UDTs passing a multi-file GDB between them.
-    * masking_table + MultiQC. The wrapper reads `element_identifier` across five whole collections
-      at once, which is exactly the shape where identifiers do not survive into a UDT.
-  So this runs three of the four masker tracks and stops before the QC table. The union, the
-  soft-masked FASTA and the .fai are all produced.
+  ⛔ STILL NOT INCLUDED: masking_table + MultiQC. That wrapper reads `element_identifier` across
+  five whole collections at once, which is exactly the shape where identifiers do not survive into
+  a UDT. Everything else the original produces is here: all four masker tracks, the union, the
+  soft-masked FASTA and the .fai.
 creator:
   - class: Person
     identifier: https://orcid.org/0000-0002-5987-8032
@@ -39,6 +36,7 @@ inputs:
     type: collection
     collection_type: list
     doc: Per-strain assembly FASTAs. Element identifier = strain. Every step maps over this.
+    position: {top: 400, left: 0}
 
 outputs:
   softmasked_fasta:
@@ -56,12 +54,29 @@ outputs:
   tantan_bed:
     outputSource: tantan_classify/output
     doc: tantan low-complexity BED6 (UCSC-hub track).
+  fastan_bed:
+    outputSource: fastan_bed/output
+    doc: fastan tandem-array BED6 (UCSC-hub track).
+  mask_union:
+    outputSource: merge_bed/output
+    doc: >-
+      The merged union of all four maskers -- the mask itself, as intervals. Published because it is
+      what makes `softmasked_fasta` CHECKABLE: its covered bases must equal that FASTA's lowercase
+      count exactly, and the two are derived from different files by different tools.
+      `scripts/verify_softmask_outputs.py` is that check.
+  uppercased_fasta:
+    outputSource: uppercase/output
+    doc: >-
+      The uppercased assemblies every masker and `maskfasta` actually saw. Published so the mask can
+      be verified against the sequence it was applied to rather than against the original, which may
+      have arrived carrying a mask of its own (cs10 ships 46.8% soft-masked).
 
 steps:
   # ---- strip any pre-existing mask ---------------------------------------------------------
   uppercase:
     tool_id: brc-fasta-uppercase
     label: uppercase
+    position: {top: 400, left: 300}
     doc: >-
       ⛔ NOT redundant with the maskers' own internal uppercasing. Each masker uppercases its
       private working copy, so the BED tracks were always computed on unmasked sequence. But
@@ -75,6 +90,7 @@ steps:
   faidx_ref:
     tool_id: brc-samtools-faidx
     label: faidx_ref
+    position: {top: 40, left: 640}
     doc: >-
       Index the UPPERCASED reference, purely to obtain the chrom/length table. ⚠ This exists to break
       a circular dependency: `bedtools_sortbed`'s `genome_file_opts` conditional REQUIRES a genome
@@ -88,12 +104,14 @@ steps:
   dustmasker_bed3:
     tool_id: brc-dustmasker-bed3
     label: dustmasker_bed3
+    position: {top: 240, left: 640}
     doc: NCBI DUST -> BED3 + the uppercased FASTA. Maps over the uppercased assemblies.
     in:
       input: uppercase/output
   dustmasker_classify:
     tool_id: brc-lc-classify
     label: dustmasker_classify
+    position: {top: 240, left: 980}
     doc: Annotate the DUST intervals with repeat-unit signature and purity -> BED6.
     in:
       fasta: dustmasker_bed3/upper_fasta
@@ -103,12 +121,14 @@ steps:
   windowmasker_bed3:
     tool_id: brc-windowmasker-bed3
     label: windowmasker_bed3
+    position: {top: 460, left: 640}
     doc: Two-pass WindowMasker -> BED3 + the uppercased FASTA. Maps over the uppercased assemblies.
     in:
       input: uppercase/output
   windowmasker_classify:
     tool_id: brc-lc-classify
     label: windowmasker_classify
+    position: {top: 460, left: 980}
     in:
       fasta: windowmasker_bed3/upper_fasta
       intervals: windowmasker_bed3/intervals
@@ -117,27 +137,63 @@ steps:
   tantan_bed3:
     tool_id: brc-tantan-bed3
     label: tantan_bed3
+    position: {top: 680, left: 640}
     doc: tantan gentle LC -> BED3 + the uppercased FASTA. Maps over the uppercased assemblies.
     in:
       input: uppercase/output
   tantan_classify:
     tool_id: brc-lc-classify
     label: tantan_classify
+    position: {top: 680, left: 980}
     in:
       fasta: tantan_bed3/upper_fasta
       intervals: tantan_bed3/intervals
+
+  # ---- fastan (three stages: two conda packages, one container each) --------------------------
+  fastan_gdb:
+    tool_id: brc-fastan-gdb
+    label: fastan_gdb
+    position: {top: 900, left: 640}
+    doc: >-
+      FAtoGDB -> a tarred GDB. ⚠ A GDB is TWO files and one is hidden (`gdb.1gdb` + `.gdb.bps`), and
+      a Galaxy dataset is one file, so the pair travels as a tarball. Verified lossless.
+    in:
+      input: uppercase/output
+  fastan_scan:
+    tool_id: brc-fastan-scan
+    label: fastan_scan
+    position: {top: 900, left: 980}
+    doc: >-
+      FasTAN -m -p over the GDB. ⚠ `-m` REQUIRES a GDB -- FasTAN advertises FASTA input but refuses
+      it with masking on -- which is why fastan_gdb cannot be skipped.
+    in:
+      gdb: fastan_gdb/output
+  fastan_bed:
+    tool_id: brc-fastan-bed
+    label: fastan_bed
+    position: {top: 900, left: 1320}
+    doc: >-
+      ANOtoBED -> BED6. Needs fastga 1.5.20260729, NOT 1.5: released 1.5 cannot open a .1ano written
+      by fastan 0.8 (bioconda-recipes#68612). ANOtoBED does not read the GDB, so nothing else here
+      consumes the tarball.
+    in:
+      ano: fastan_scan/output
 
   # ---- union ------------------------------------------------------------------------------
   union_cat:
     tool_id: cat1
     label: union_cat
-    doc: Concatenate the three per-strain BED6 sets (zipped by element identifier) before merge.
+    position: {top: 460, left: 1660}
+    doc: Concatenate the four per-strain BED6 sets (zipped by element identifier) before merge.
     in:
       input1: dustmasker_classify/output
       queries_0|input2: windowmasker_classify/output
       queries_1|input2: tantan_classify/output
+      queries_2|input2: fastan_bed/output
     state:
       queries:
+        - input2:
+            __class__: ConnectedValue
         - input2:
             __class__: ConnectedValue
         - input2:
@@ -145,6 +201,7 @@ steps:
   sort_bed:
     tool_id: bedtools_sortbed
     label: sort_bed
+    position: {top: 460, left: 1960}
     doc: Sort the concatenated intervals (required before merge).
     in:
       input: union_cat/out_file1
@@ -156,7 +213,8 @@ steps:
   merge_bed:
     tool_id: bedtools_mergebed
     label: merge_bed
-    doc: Merge overlapping intervals across the three maskers.
+    position: {top: 460, left: 2260}
+    doc: Merge overlapping intervals across all four maskers.
     in:
       input: sort_bed/output
 
@@ -164,6 +222,7 @@ steps:
   maskfasta:
     tool_id: bedtools_maskfastabed
     label: maskfasta
+    position: {top: 300, left: 2580}
     doc: >-
       Soft-mask the UPPERCASED assembly at the merged union intervals (-soft), zipped by strain.
       Reading `uppercase/output` rather than `assemblies` is what makes the result this workflow's
@@ -176,6 +235,7 @@ steps:
   faidx:
     tool_id: brc-samtools-faidx
     label: faidx
+    position: {top: 300, left: 2900}
     doc: >-
       Index the soft-masked FASTA. Replaces the original's `samtools_faidx` step, which cannot run
       on usegalaxy.org, and its `Cut c1,c2` follow-up, whose output this emits directly.
@@ -186,6 +246,7 @@ steps:
   gcov_dust:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_dust
+    position: {top: 700, left: 2580}
     doc: Genome coverage (max depth 1) of dustmasker intervals; maps over strains.
     in:
       input_type|input: dustmasker_classify/output
@@ -210,6 +271,7 @@ steps:
   gcov_window:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_window
+    position: {top: 880, left: 2580}
     in:
       input_type|input: windowmasker_classify/output
       input_type|genome_file_opts|genome: faidx_ref/sizes
@@ -233,6 +295,7 @@ steps:
   gcov_tantan:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_tantan
+    position: {top: 1060, left: 2580}
     in:
       input_type|input: tantan_classify/output
       input_type|genome_file_opts|genome: faidx_ref/sizes
@@ -253,9 +316,31 @@ steps:
       dz: false
       five: false
       three: false
+  gcov_fastan:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
+    label: gcov_fastan
+    position: {top: 1240, left: 2580}
+    in:
+      input_type|input: fastan_bed/output
+      input_type|genome_file_opts|genome: faidx_ref/sizes
+    state:
+      input_type:
+        input_type_select: bed
+        genome_file_opts:
+          genome_file_opts_selector: hist
+      report:
+        report_select: hist
+        max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
   gcov_union:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_union
+    position: {top: 1420, left: 2580}
     doc: Genome coverage (max depth 1) of the merged union intervals; maps over strains.
     in:
       input_type|input: merge_bed/output

@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
-"""Verify a completed softmask run by recomputing its mask two independent ways.
+"""Verify a softmask invocation by recomputing its mask two independent ways.
 
-⛔ "34 JOBS OK" IS NOT EVIDENCE THE OUTPUT IS RIGHT, AND THIS PIPELINE HAS ALREADY PROVED IT. Every
+⛔ "42 JOBS OK" IS NOT EVIDENCE THE OUTPUT IS RIGHT, AND THIS PIPELINE HAS ALREADY PROVED IT. Every
 step of the committed workflow exited 0 while `maskfasta` was being fed the ORIGINAL assembly
 instead of the uppercased one, so the published `softmasked_fasta` carried NCBI's pre-existing mask
 unioned with this workflow's, indistinguishably -- and the invocation summary was entirely green.
 An invocation summary reports scheduling, not correctness.
 
-THE CHECK. For each strain, take two numbers that are derived from different files by different
-tools and must agree if the pipeline is sound:
+THE CHECK. For each strain, two numbers derived from different files by different tools, which must
+agree if the pipeline is sound:
 
-    A. bases covered by the merged union BED   (from the intervals, via bedtools)
+    A. bases covered by the merged union BED   (from the intervals, via bedtools merge)
     B. lowercase bases in the soft-masked FASTA (from the sequence, via bedtools maskfasta)
 
-A == B exactly, or the mask that was APPLIED is not the mask that was COMPUTED. Under the old
-wiring B exceeded A by however much the assembly arrived carrying -- for cs10 that is tens of
-percent, not a rounding difference.
+A == B exactly, or the mask APPLIED is not the mask COMPUTED. Under the old wiring B exceeded A by
+whatever the assembly arrived carrying -- for cs10 that is tens of percent, not a rounding error.
 
-⚠ It also asserts the uppercased input really is uppercase, because if it were not, A == B could
-hold while both were wrong.
+⚠ It also asserts the uppercased input really is uppercase. Without that, A == B could hold with
+both wrong.
 
-    python3 scripts/verify_softmask_outputs.py --history <history_id>
+⛔ RESOLVE BY INVOCATION, NOT BY SCANNING A HISTORY. The previous version searched a history for
+collections whose NAMES matched `"Merged "` / `"bedtools MaskFastaBed"` and took the highest hid of
+each, independently. Two consequences, both silent:
+
+  * Those are ToolShed-derived DEFAULT names that nothing in this repo generates or asserts. One
+    tool version bump and the script exits "is this a completed softmask run?" -- a false negative
+    that reads like the run failed.
+  * `build_up_softmask.py` runs all seven tiers into ONE history, and tiers 6 and 7 both produce a
+    merged BED and a masked FASTA. Nothing tied the three collections to a single invocation, so a
+    partially-failed tier 7 could have the union read from one tier and the FASTA from another --
+    and the script would still print "the mask applied is exactly the mask computed".
+
+An invocation exposes `output_collections` keyed by the workflow's OWN declared output names, so
+`--invocation` resolves each collection exactly and cannot cross runs.
+
+    python3 scripts/verify_softmask_outputs.py --invocation <invocation_id>
 """
 from __future__ import annotations
 
@@ -30,10 +44,10 @@ import sys
 
 from bioblend.galaxy import GalaxyInstance
 
-#: Collection names produced by workflows/softmask/softmask_udt.gxwf.yml.
-UPPER = "Uppercased FASTA"
-MERGED_PREFIX = "Merged "
-MASKED_PREFIX = "bedtools MaskFastaBed"
+#: Declared output names in workflows/softmask/softmask_udt.gxwf.yml.
+UPPER_OUT = "uppercased_fasta"
+UNION_OUT = "mask_union"
+MASKED_OUT = "softmasked_fasta"
 
 
 def connect() -> GalaxyInstance:
@@ -41,11 +55,6 @@ def connect() -> GalaxyInstance:
     if not url or not key:
         sys.exit("GALAXY_URL and GALAXY_API_KEY must be set.")
     return GalaxyInstance(url=url.rstrip("/"), key=key)
-
-
-def collections(gi: GalaxyInstance, history: str) -> list[dict]:
-    return [i for i in gi.histories.show_history(history, contents=True)
-            if i.get("history_content_type") == "dataset_collection"]
 
 
 def elements(gi: GalaxyInstance, collection_id: str) -> dict[str, str]:
@@ -70,7 +79,7 @@ def fasta_stats(t: str) -> tuple[int, int]:
 
 
 def bed_span(t: str) -> int:
-    """Bases covered. Assumes MERGED input -- overlapping intervals would double-count."""
+    """Bases covered. ⚠ Assumes MERGED input; overlapping intervals would double-count."""
     total = 0
     for line in t.splitlines():
         f = line.split("\t")
@@ -79,36 +88,44 @@ def bed_span(t: str) -> int:
     return total
 
 
-def pick(cols: list[dict], predicate) -> dict | None:
-    hits = [c for c in cols if predicate(c["name"])]
-    return max(hits, key=lambda c: c["hid"]) if hits else None
+def resolve(gi: GalaxyInstance, invocation_id: str) -> dict[str, str]:
+    """Map the three declared output names to collection ids, all from ONE invocation."""
+    inv = gi.invocations.show_invocation(invocation_id)
+    if inv.get("state") != "scheduled":
+        print(f"  ⚠ invocation state is {inv.get('state')!r}, not 'scheduled' -- "
+              f"results below may be from an incomplete run.")
+    cols = inv.get("output_collections") or {}
+    missing = [n for n in (UPPER_OUT, UNION_OUT, MASKED_OUT) if n not in cols]
+    if missing:
+        sys.exit(f"invocation {invocation_id} does not declare {', '.join(missing)}. "
+                 f"It exposes: {sorted(cols)}.\n"
+                 f"  A workflow predating the mask_union/uppercased_fasta outputs cannot be "
+                 f"verified this way -- re-run the current softmask_udt.gxwf.yml.")
+    return {n: cols[n]["id"] for n in (UPPER_OUT, UNION_OUT, MASKED_OUT)}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--history", required=True, help="history id of a completed softmask run")
+    ap.add_argument("--invocation", required=True,
+                    help="invocation id of a softmask run (NOT a history id -- a history can hold "
+                         "several runs, and mixing their collections is exactly the bug this "
+                         "argument exists to prevent)")
     args = ap.parse_args()
 
     gi = connect()
-    cols = collections(gi, args.history)
-    upper = pick(cols, lambda n: n == UPPER)
-    merged = pick(cols, lambda n: n.startswith(MERGED_PREFIX))
-    masked = pick(cols, lambda n: n.startswith(MASKED_PREFIX))
-    missing = [lbl for lbl, c in (("uppercased", upper), ("merged union", merged),
-                                  ("masked FASTA", masked)) if c is None]
-    if missing:
-        sys.exit(f"history {args.history} has no {', '.join(missing)} collection -- "
-                 f"is this a completed softmask run?")
+    ids = resolve(gi, args.invocation)
+    up_e = elements(gi, ids[UPPER_OUT])
+    mg_e = elements(gi, ids[UNION_OUT])
+    mk_e = elements(gi, ids[MASKED_OUT])
 
-    up_e, mg_e, mk_e = (elements(gi, c["id"]) for c in (upper, merged, masked))
     strains = sorted(set(up_e) & set(mg_e) & set(mk_e))
     if not strains:
         sys.exit("no strain appears in all three collections; element identifiers do not line up.")
-    for label, e in (("uppercased", up_e), ("merged", mg_e), ("masked", mk_e)):
-        if set(e) != set(strains):
-            print(f"  ⚠ {label} collection covers {sorted(set(e) ^ set(strains))} not in the "
-                  f"intersection; those strains are NOT checked below.")
+    for label, e in ((UPPER_OUT, up_e), (UNION_OUT, mg_e), (MASKED_OUT, mk_e)):
+        extra = sorted(set(e) - set(strains))
+        if extra:
+            print(f"  ⚠ {label} also holds {extra}, absent from another collection -- NOT checked.")
 
     print("  union BED coverage vs masked-FASTA lowercase -- derived independently\n")
     failures = 0
@@ -122,8 +139,8 @@ def main() -> int:
         print(f"    {s}")
         print(f"      uppercased input : {ures:,} nt, {ulow} lowercase"
               f"        {'ok' if ok_upper else '⛔ NOT UPPERCASE / LENGTH CHANGED'}")
-        print(f"      merged union BED : {covered:,} nt ({covered/res:.2%})")
-        print(f"      masked FASTA     : {low:,} lowercase ({low/res:.2%})")
+        print(f"      merged union BED : {covered:,} nt ({covered / res:.2%})")
+        print(f"      masked FASTA     : {low:,} lowercase ({low / res:.2%})")
         print(f"      delta            : {low - covered:+,}"
               f"        {'MATCH' if ok_mask else '⛔ applied mask != computed mask'}")
     print()
