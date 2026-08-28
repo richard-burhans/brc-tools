@@ -93,10 +93,32 @@ GALAXY_EXPR = re.compile(r"\$\([^)]*\)")
 #: below, and flagging them would refuse every wrapper that pipes through awk.
 SURVIVING_VAR = re.compile(r"\$\{?([A-Za-z_]\w*)")
 
-#: Environment variables the container runtime provides, which pass through a `shell_command`
-#: unchanged and are NOT untranslated templates. Kept as an explicit allowlist rather than an
-#: "is it upper-case?" heuristic, because `$GALAXY_SLOTS` is upper-case and is NOT one of these.
-SHELL_ENV_OK = frozenset({"TMPDIR", "HOME", "PWD", "PATH", "USER", "SHELL", "LANG", "LC_ALL"})
+#: Environment variables the UDT job container exports, which pass through a `shell_command`
+#: unchanged and are NOT untranslated templates.
+#:
+#: ⛔ MEASURED ON usegalaxy.org, NOT ASSUMED. `udt/env_probe.gxtool.yml` dumps `printenv` from
+#: inside a real UDT job; run it again if this list is ever in doubt. As of 2026-08-28 (job
+#: 79420986, an Apptainer container on the main cluster) the exported set was exactly these plus
+#: Apptainer/Singularity bookkeeping, and `GALAXY_SLOTS` was 1, matching `nproc`.
+#:
+#: ⚠ `USER` and `SHELL` are DELIBERATELY ABSENT, for two DIFFERENT reasons, and the distinction is
+#: the point. Neither appears in `printenv`. `$USER` therefore expands to the empty string. `$SHELL`
+#: does NOT -- it read `/bin/bash` -- but that value comes from the invoking bash, not from Galaxy,
+#: so it is not a platform guarantee and does not belong on a list of things Galaxy provides. Both
+#: were on this list until the probe was run, purely because they look like variables that ought to
+#: exist.
+SHELL_ENV_OK = frozenset({
+    "TMPDIR", "TMP", "TEMP", "HOME", "PWD", "PATH", "LANG", "LC_ALL",
+    "GALAXY_SLOTS", "GALAXY_MEMORY_MB", "GALAXY_MEMORY_MB_PER_SLOT",
+    "_GALAXY_JOB_TMP_DIR", "_GALAXY_JOB_HOME_DIR",
+})
+
+#: ⛔ `${VAR}` IS FATAL, AND `$VAR` IS FINE. Galaxy claims the brace form for its own templating, so
+#: a `shell_command` containing `${GALAXY_SLOTS}` -- or `${GALAXY_SLOTS:-4}`, which is what
+#: tools/fastan writes -- fails with "Error occurred while building command line for tool", with
+#: BOTH job streams empty and no indication of which variable caused it. Measured 2026-08-28: the
+#: identical probe with braces failed and without braces returned `1`.
+BRACE_EXPANSION = re.compile(r"\$\{[^}]*\}")
 
 
 def refuse(msg: str) -> None:
@@ -242,16 +264,25 @@ def assert_fully_translated(cmd: str) -> None:
                f"  `shell_command` has no templating; restructure the XML or port this by hand.")
     # Blank out our own `$(...)` emissions before looking for leftovers.
     residue = GALAXY_EXPR.sub("", cmd)
+    brace = BRACE_EXPANSION.search(residue)
+    if brace:
+        inner = brace.group(0)[2:-1]
+        bare = inner.split(":")[0].split("-")[0] or "VAR"
+        refuse(f"`{brace.group(0)}` uses shell brace expansion, which Galaxy claims for its own "
+               f"templating. The job then fails with \"Error occurred while building command line\" "
+               f"and BOTH streams empty — measured on usegalaxy.org 2026-08-28.\n"
+               f"  Write it bare instead: `${bare}`. The bare form reaches the shell untouched and "
+               f"the container does export it (GALAXY_SLOTS read 1).\n"
+               f"  ⚠ A `:-default` cannot survive this rewrite; drop it, or port by hand.")
     for match in SURVIVING_VAR.finditer(residue):
         var = match.group(1)
         if var in SHELL_ENV_OK:
-            continue  # provided by the container runtime; passes through untouched
+            continue  # measured as exported by the job container; passes through untouched
         if var.startswith("GALAXY_"):
-            refuse(f"`${var}` survived conversion. In a classic wrapper Galaxy substitutes this at "
-                   f"TEMPLATE time; a `shell_command` is not templated, so it would be read as a "
-                   f"shell environment variable instead — and whether the UDT job container exports "
-                   f"it is not something this converter can verify. Substitute a literal (e.g. a "
-                   f"fixed thread count) in the XML, or port this tool by hand.")
+            refuse(f"`${var}` survived conversion. `udt/env_probe.gxtool.yml` measured which "
+                   f"GALAXY_* variables a UDT container exports and this is not one of them, so it "
+                   f"would expand to the empty string. Re-run the probe if you think that has "
+                   f"changed, or substitute a literal in the XML.")
         refuse(f"`${var}` survived conversion — it matches no `<param>` or `<data>` in "
                f"this XML, so it would reach the container as an undefined shell variable and expand "
                f"to the empty string. Declare it, or port this tool by hand.")
