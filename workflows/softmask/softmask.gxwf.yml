@@ -53,12 +53,22 @@ outputs:
     doc: MultiQC report of per-strain soft-masking proportions per tool (custom-content table).
 
 steps:
+  uppercase:
+    tool_id: fasta_uppercase
+    label: uppercase
+    doc: >-
+      Strip any soft-masking the assembly arrived with, so this workflow's output carries this
+      workflow's mask and nothing else. Each masker already upper-cases its own working copy, so
+      the BED tracks were always de novo; maskfasta was not, and that is what this fixes.
+    in:
+      input: assemblies
+    position: {top: 170, left: 150}
   dustmasker:
     tool_id: dustmasker
     label: dustmasker
     doc: NCBI DUST low-complexity -> content-annotated BED6. Maps over assemblies.
     in:
-      input: assemblies
+      input: uppercase/output
     position: {top: 0, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -76,7 +86,7 @@ steps:
     label: windowmasker
     doc: NCBI WindowMasker genome-frequency repeats -> BED6. Maps over assemblies.
     in:
-      input: assemblies
+      input: uppercase/output
     position: {top: 220, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -94,7 +104,7 @@ steps:
     label: tantan
     doc: tantan gentle low-complexity -> BED6. Maps over assemblies.
     in:
-      input: assemblies
+      input: uppercase/output
     position: {top: 660, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -112,7 +122,7 @@ steps:
     label: fastan
     doc: FASTAN tandem arrays -> BED6. Maps over assemblies.
     in:
-      input: assemblies
+      input: uppercase/output
     position: {top: 830, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -166,10 +176,13 @@ steps:
     tool_id: bedtools_maskfastabed
     label: maskfasta
     doc: >-
-      Soft-mask the assembly at the merged union intervals (-soft). IUC bedtools.
-      fasta = assembly (per strain), bed = merged union (per strain), zipped by strain.
+      Soft-mask the UPPER-CASED assembly at the merged union intervals (-soft). IUC bedtools.
+      fasta = upper-cased assembly (per strain), bed = merged union (per strain), zipped by
+      strain. Reading `uppercase/output` rather than `assemblies` is what makes the published
+      FASTA carry this workflow's own mask instead of its union with whatever the assembly
+      arrived already carrying.
     in:
-      fasta: assemblies
+      fasta: uppercase/output
       input: merge_bed/output
     state:
       soft: true

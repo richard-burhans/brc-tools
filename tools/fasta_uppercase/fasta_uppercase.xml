@@ -1,0 +1,59 @@
+<tool id="fasta_uppercase" name="fasta_uppercase" version="1.0.0+galaxy0" profile="23.0">
+    <description>upper-case a FASTA, discarding any pre-existing soft-masking</description>
+    <command detect_errors="exit_code"><![CDATA[
+set -o pipefail &&
+#if str($input.ext) == 'fasta.gz'
+    gunzip -c '$input'
+#else
+    cat '$input'
+#end if
+| awk '
+    /^>/ { print; next }
+    {
+        total += length(\$0)
+        lower += gsub(/[a-z]/, "&")
+        print toupper(\$0)
+    }
+    END {
+        if (total == 0) {
+            print "fasta_uppercase: no sequence found in input" > "/dev/stderr"
+            exit 1
+        }
+        printf("upper-cased %d residues; discarded soft-masking on %d (%.2f%%)\n",
+               total, lower, 100 * lower / total) > "/dev/stderr"
+    }
+' > '$output'
+    ]]></command>
+    <inputs>
+        <param name="input" type="data" format="fasta,fasta.gz" label="Assembly FASTA"
+               help="Plain or gzipped. Soft-masked or not."/>
+    </inputs>
+    <outputs>
+        <data name="output" format="fasta" label="${tool.name} on ${on_string}: upper-cased"/>
+    </outputs>
+    <tests>
+        <test>
+            <param name="input" value="mixed_case.fa"/>
+            <output name="output" file="mixed_case_upper.fa"/>
+        </test>
+    </tests>
+    <help><![CDATA[
+**fasta_uppercase** — rewrites every sequence line in upper case and leaves header
+lines exactly as they are.
+
+The lower-case tally uses ``gsub(/[a-z]/, "&")``, which replaces each match with itself
+and returns the count, so the line is unchanged and counting costs no second pass.
+
+**Header lines are never modified**, and that is the whole correctness argument for
+the tool. Sequence names are case-sensitive identifiers, so a blanket
+``tr '[:lower:]' '[:upper:]'`` renames every scaffold — ``scaffold_12`` becomes
+``SCAFFOLD_12`` — and every downstream join by name then silently finds nothing.
+
+**Why WF-B needs it.** Each masker already upper-cases its own private working copy,
+so the BED tracks were always computed de novo. ``bedtools maskfasta -soft``, however,
+lower-cases the union intervals *on top of whatever was already lower-case*. Applied to
+an assembly that arrives soft-masked — cs10 ships 46.8% masked from NCBI — the published
+soft-masked FASTA becomes the union of this pipeline's mask and the assembly's own, with
+no way to tell them apart, while the BED tracks report only the former.
+    ]]></help>
+</tool>
