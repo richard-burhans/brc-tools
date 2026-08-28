@@ -9,11 +9,10 @@ long_description: |
   unit identity on a 0-1000 grayscale, strand = the real orientation. The input
   is upper-cased first, so calls are computed de novo.
 
-  NOTE ON DEPENDENCIES: the tool XML records that bioconda fastan 0.5 does not
-  implement masking (-m), that the .1ano tandem annotation needs the 0.8 line,
-  and that FASTGA's ANOtoBED converter is not yet in the fastga conda package.
-  Until bioconda ships fastan 0.8 together with ANOtoBED this wrapper cannot
-  resolve its dependencies from a Tool Shed install.
+  Dependencies resolve from bioconda: FAtoGDB and ANOtoBED from fastga 1.5,
+  FasTAN from fastan 0.8. Both blockers this wrapper was originally written
+  around are resolved upstream -- fastan 0.8 carries masking (-m / .1ano), and
+  fastga 1.5's build.sh installs ANOtoBED alongside FAtoGDB.
 name: fastan
 owner: nekrut
 homepage_url: https://github.com/thegenemyers/FASTAN
