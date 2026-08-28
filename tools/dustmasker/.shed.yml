@@ -1,0 +1,17 @@
+categories:
+- Sequence Analysis
+description: dustmasker - NCBI symmetric-DUST low-complexity intervals as content-annotated BED6
+long_description: |
+  dustmasker (NCBI BLAST+) finds low-complexity DNA with the symmetric DUST
+  algorithm. This wrapper emits BED6 with per-interval content rather than bare
+  intervals: name = repeat-unit signature (polyA, (AT)n, lc ...), score = unit
+  purity x1000 on the UCSC grayscale, strand = "." — so the calls can be loaded
+  directly as a UCSC hub track. The input is upper-cased first, so masking is
+  computed de novo and is independent of any pre-existing soft-masking. Used in
+  Phase B (WF-B) as the maintained replacement for the unmaintained standalone
+  sdust.
+name: dustmasker
+owner: nekrut
+homepage_url: https://blast.ncbi.nlm.nih.gov/
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/dustmasker
+type: unrestricted

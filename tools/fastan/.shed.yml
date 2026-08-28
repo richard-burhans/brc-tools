@@ -1,0 +1,21 @@
+categories:
+- Sequence Analysis
+description: fastan - FASTAN tandem-repeat arrays as content-annotated BED6
+long_description: |
+  FASTAN (Gene Myers) detects tandem repeat arrays and partitions them into
+  units, which makes it complementary to the DUST-family low-complexity tracks
+  rather than a substitute for them. This wrapper runs FAtoGDB -> FasTAN -m -p
+  -> ANOtoBED and emits BED6: name = u<unit_size> (tandem unit length), score =
+  unit identity on a 0-1000 grayscale, strand = the real orientation. The input
+  is upper-cased first, so calls are computed de novo.
+
+  NOTE ON DEPENDENCIES: the tool XML records that bioconda fastan 0.5 does not
+  implement masking (-m), that the .1ano tandem annotation needs the 0.8 line,
+  and that FASTGA's ANOtoBED converter is not yet in the fastga conda package.
+  Until bioconda ships fastan 0.8 together with ANOtoBED this wrapper cannot
+  resolve its dependencies from a Tool Shed install.
+name: fastan
+owner: nekrut
+homepage_url: https://github.com/thegenemyers/FASTAN
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/fastan
+type: unrestricted
