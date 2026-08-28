@@ -105,7 +105,7 @@ def run_tier(gi: GalaxyInstance, wf_id: str, hdca: str, history: str) -> tuple[b
     try:
         inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history,
                                            allow_tool_state_corrections=True)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a tier reports whatever refused it, not one class
         return False, f"INVOKE REFUSED: {str(e)[:260]}"
     # wait for every job to reach a terminal state
     deadline = time.monotonic() + 2400
@@ -150,7 +150,7 @@ def main() -> int:
         print(f"\nTIER {label}  ({len(doc['steps'])} steps)")
         try:
             wf_id = render(gi, doc, uuids)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - same: surface the refusal, do not classify it
             print(f"  ⛔ RENDER FAILED: {str(e)[:240]}")
             return 1
         ok, detail = run_tier(gi, wf_id, hdca, h["id"])

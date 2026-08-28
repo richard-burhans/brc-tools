@@ -130,7 +130,7 @@ def main() -> int:
     # ---- stage 1: uppercase -----------------------------------------------------------------
     print("\nSTAGE 1  brc-fasta-uppercase")
     j = run_udt(gi, h["id"], uuids["fasta_uppercase"], {"input": {"src": "hda", "id": raw}})
-    job = c.wait(j["jobs"][0]["id"], "uppercase job")
+    c.wait(j["jobs"][0]["id"], "uppercase job")
     upper_id = j["outputs"][0]["id"]
     ut = c.text(upper_id)
     s1, r1, l1 = fasta_stats(ut)
