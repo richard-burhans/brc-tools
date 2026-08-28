@@ -70,7 +70,7 @@ def register(gi: GalaxyInstance) -> dict[str, str]:
     for name in UDTS:
         path = UDT_DIR / f"{name}.gxtool.yml"
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-        created = gi.make_post_request(f"{gi.base_url}/unprivileged_tools",
+        created = gi.make_post_request(f"{gi.url}/unprivileged_tools",
                                        payload={"representation": doc}, params={"key": key})
         mapping[doc["id"]] = created["uuid"]
         print(f"  registered {doc['id']:24} v{doc['version']} -> {created['uuid']}")
@@ -176,13 +176,13 @@ def main() -> int:
     wf_id = render_and_import(gi, uuids, args.work)
 
     history = gi.histories.create_history(name="WF-B softmask (UDT edition)")
-    print(f"  history {gi.base_url.rsplit('/api',1)[0]}/histories/view?id={history['id']}")
+    print(f"  history {gi.base_url}/histories/view?id={history['id']}")
     hdca = upload_collection(gi, history["id"], args.fasta)
 
     handles = gi.workflows.show_workflow(wf_id)["inputs"]
     inputs = {sid: {"src": "hdca", "id": hdca} for sid in handles}
     inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history["id"])
-    base = gi.base_url.rsplit("/api", 1)[0]
+    base = gi.base_url
     print(f"  INVOKED {inv['id']} -> {base}/workflows/invocations/{inv['id']}")
     return await_invocation(gi, inv["id"])
 

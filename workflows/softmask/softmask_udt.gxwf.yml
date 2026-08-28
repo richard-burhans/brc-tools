@@ -72,6 +72,18 @@ steps:
     in:
       input: assemblies
 
+  faidx_ref:
+    tool_id: brc-samtools-faidx
+    label: faidx_ref
+    doc: >-
+      Index the UPPERCASED reference, purely to obtain the chrom/length table. ⚠ This exists to break
+      a circular dependency: `bedtools_sortbed`'s `genome_file_opts` conditional REQUIRES a genome
+      dataset in its `hist` case, but the only .fai the workflow otherwise produces comes from
+      `maskfasta`, which runs after the sort that needs it. Soft-masking does not change sequence
+      LENGTHS, so indexing the reference gives the identical table, earlier.
+    in:
+      input: uppercase/output
+
   # ---- dustmasker -------------------------------------------------------------------------
   dustmasker_bed3:
     tool_id: brc-dustmasker-bed3
@@ -136,7 +148,9 @@ steps:
     doc: Sort the concatenated intervals (required before merge).
     in:
       input: union_cat/out_file1
+      genome_file_opts|genome: faidx_ref/sizes
     state:
+      option: ''
       genome_file_opts:
         genome_file_opts_selector: hist
   merge_bed:
@@ -175,7 +189,7 @@ steps:
     doc: Genome coverage (max depth 1) of dustmasker intervals; maps over strains.
     in:
       input_type|input: dustmasker_classify/output
-      input_type|genome_file_opts|genome: faidx/sizes
+      input_type|genome_file_opts|genome: faidx_ref/sizes
     state:
       input_type:
         input_type_select: bed
@@ -189,7 +203,7 @@ steps:
     label: gcov_window
     in:
       input_type|input: windowmasker_classify/output
-      input_type|genome_file_opts|genome: faidx/sizes
+      input_type|genome_file_opts|genome: faidx_ref/sizes
     state:
       input_type:
         input_type_select: bed
@@ -203,7 +217,7 @@ steps:
     label: gcov_tantan
     in:
       input_type|input: tantan_classify/output
-      input_type|genome_file_opts|genome: faidx/sizes
+      input_type|genome_file_opts|genome: faidx_ref/sizes
     state:
       input_type:
         input_type_select: bed
@@ -218,7 +232,7 @@ steps:
     doc: Genome coverage (max depth 1) of the merged union intervals; maps over strains.
     in:
       input_type|input: merge_bed/output
-      input_type|genome_file_opts|genome: faidx/sizes
+      input_type|genome_file_opts|genome: faidx_ref/sizes
     state:
       input_type:
         input_type_select: bed
