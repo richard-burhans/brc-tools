@@ -1,0 +1,17 @@
+categories:
+- Sequence Analysis
+- Visualization
+description: masking_table - pivot per-masker bedtools genomecov into a MultiQC custom-content table
+long_description: |
+  Reads each masker's per-strain bedtools genomecov output (hist, -max 1), takes
+  the genome-wide masked fraction from the "genome 1 ..." row, converts it to a
+  percent, and writes a tab-separated matrix with one row per strain and one
+  column per masker, plus a union column when one is supplied. The header line is
+  deliberately written without a leading "#" so that MultiQC custom-content
+  renders it as a table. Used in Phase B (WF-B) to summarise how much of each
+  assembly every masker called.
+name: masking_table
+owner: nekrut
+homepage_url: https://github.com/nekrut/brc-tools
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/masking_table
+type: unrestricted

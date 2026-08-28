@@ -1,0 +1,16 @@
+categories:
+- Sequence Analysis
+description: tantan - gentle probabilistic low-complexity intervals as content-annotated BED6
+long_description: |
+  tantan (Martin Frith) masks low-complexity and tandem-repeat sequence with a
+  probabilistic model. It is deliberately gentler than DUST-family maskers and
+  is well suited to AT-rich genomes. This wrapper emits BED6 with per-interval
+  content: name = repeat-unit signature, score = purity x1000 on the UCSC
+  grayscale, strand = "." — loadable directly as a UCSC hub track. The input is
+  upper-cased first, so masking is computed de novo and is independent of any
+  pre-existing soft-masking.
+name: tantan
+owner: nekrut
+homepage_url: https://gitlab.com/mcfrith/tantan
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/tantan
+type: unrestricted

@@ -1,0 +1,17 @@
+categories:
+- Sequence Analysis
+description: windowmasker - NCBI WindowMasker genome-frequency repeat intervals as content-annotated BED6
+long_description: |
+  WindowMasker (NCBI BLAST+) learns over-represented k-mers from the genome
+  itself and masks repeats and low-complexity sequence from that model, so it
+  needs no repeat library — which makes it suitable for genomes that have none.
+  This wrapper runs both passes (-mk_counts then -ustat) as a single step and
+  emits BED6 with per-interval content: name = repeat-unit signature, score =
+  purity x1000, strand = ".", loadable as a UCSC hub track. The input is
+  upper-cased first, so masking is computed de novo and is independent of any
+  pre-existing soft-masking.
+name: windowmasker
+owner: nekrut
+homepage_url: https://blast.ncbi.nlm.nih.gov/
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/windowmasker
+type: unrestricted
