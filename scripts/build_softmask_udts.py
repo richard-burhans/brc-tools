@@ -265,6 +265,124 @@ help:
     the bedtools genome file, which is exactly `chrom.sizes` here.
 """
 
+    # ⛔ NOT fastga 1.5. Released 1.5 predates upstream's "ANO file definition change" (0a4a4db,
+    # 2026-04-23) and its ANOtoBED cannot open a .1ano written by fastan 0.8 -- it fails at
+    # file-open with no hint that a version mismatch is the cause. bioconda-recipes#68612 added
+    # 1.5.20260729, which can. See the fastan_bed help text.
+    awk_ano = read_helper("tools/fastan/ano2bed6.awk")
+    out["fastan_gdb.gxtool.yml"] = HEADER + """class: GalaxyUserTool
+id: brc-fastan-gdb
+version: "0.1.0"
+name: FAtoGDB -> GDB tarball (BRC UDT)
+description: Convert a FASTA to a FastGA GDB, stage 1 of 3 for the fastan tandem-array track
+container: quay.io/biocontainers/fastga:1.5.20260729--h118bc1c_0
+shell_command: |
+  set -o pipefail
+  cp '$(inputs.input.path)' up.fa
+  FAtoGDB up.fa gdb
+  tar cf gdb.tar gdb.1gdb .gdb.bps
+inputs:
+  - name: input
+    type: data
+    format: fasta
+    label: Uppercased FASTA
+outputs:
+  - name: output
+    type: data
+    format: data
+    from_work_dir: gdb.tar
+    label: GDB tarball (gdb.1gdb + .gdb.bps)
+help:
+  format: markdown
+  content: |
+    ⛔ **A GDB IS TWO FILES, AND ONE OF THEM IS HIDDEN.** `FAtoGDB x.fa gdb` writes `gdb.1gdb`
+    (metadata) *and* `.gdb.bps` (the packed sequence, dot-prefixed). A Galaxy dataset is a single
+    file, so the pair is tarred and untarred by stage 2. `tar cf` must name `.gdb.bps` explicitly --
+    a glob will not match a dot-file.
+
+    Verified lossless: FasTAN run on an untarred GDB produces BED output byte-identical to FasTAN
+    run on the original.
+
+    **Why three tools.** `FAtoGDB` and `ANOtoBED` are in the **fastga** package; `FasTAN` is in
+    **fastan**. A UDT gets one container and no mulled fastan+fastga image exists -- confirmed
+    against quay.io with galaxy-tool-util's own hashing, with a known-good combination as the
+    control (bwa+samtools resolves, this one 401s).
+"""
+
+    out["fastan_scan.gxtool.yml"] = HEADER + """class: GalaxyUserTool
+id: brc-fastan-scan
+version: "0.1.0"
+name: FasTAN tandem scan (BRC UDT)
+description: Find tandem arrays in a GDB, stage 2 of 3
+container: quay.io/biocontainers/fastan:0.8--h118bc1c_1
+shell_command: |
+  set -o pipefail
+  cp '$(inputs.gdb.path)' gdb.tar
+  tar xf gdb.tar
+  FasTAN -m -p -T$GALAXY_SLOTS -oscan gdb
+inputs:
+  - name: gdb
+    type: data
+    format: data
+    label: GDB tarball from stage 1
+outputs:
+  - name: output
+    type: data
+    format: data
+    from_work_dir: scan.1ano
+    label: tandem annotation (.1ano)
+help:
+  format: markdown
+  content: |
+    ⚠ **`-m` REQUIRES A GDB; a FASTA is refused.** `FasTAN` accepts `.fa/.fna/.fasta[.gz]` per its
+    usage line, but with masking on it exits *"The source must be a GDB when masking (-m) is on"*.
+    That is why stage 1 exists rather than this tool reading the assembly directly.
+
+    ⚠ `$GALAXY_SLOTS` is read bare, never as `${GALAXY_SLOTS}` -- the brace form is fatal in a UDT.
+    On usegalaxy.org it is 1. **`FasTAN` is unaffected by the FASTAN v0.8 double-free** that aborts
+    `FastTIR`/`FastLTR` at any thread count above 1; measured clean at -T1, -T2 and -T4.
+"""
+
+    out["fastan_bed.gxtool.yml"] = HEADER + f"""class: GalaxyUserTool
+id: brc-fastan-bed
+version: "0.1.0"
+name: ANOtoBED -> BED6 (BRC UDT)
+description: Convert a FasTAN annotation to a content-annotated BED6, stage 3 of 3
+container: quay.io/biocontainers/fastga:1.5.20260729--h118bc1c_0
+shell_command: |
+  cat > ano2bed6.awk <<'BRC_AWK'
+{indent(awk_ano)}
+  BRC_AWK
+  set -o pipefail
+  cp '$(inputs.ano.path)' scan.1ano
+  ANOtoBED scan.1ano | grep -v '^#' | awk -f ano2bed6.awk \\
+    | LC_ALL=C sort -k1,1 -k2,2n > annotated.bed6
+inputs:
+  - name: ano
+    type: data
+    format: data
+    label: .1ano from stage 2
+outputs:
+  - name: output
+    type: data
+    format: bed
+    from_work_dir: annotated.bed6
+    label: tandem-array BED6
+help:
+  format: markdown
+  content: |
+    ⚠ **`ANOtoBED` does NOT need the GDB** -- the sequence names are carried inside the `.1ano`, so
+    only stage 2 consumes the tarball. Verified by running it in a directory containing nothing but
+    the annotation.
+
+    ⚠ The input is copied to a `.1ano` name first: Galaxy dataset paths end in `.dat`, and the tool
+    dispatches on the extension.
+
+    Column 1 is the FIRST WHITESPACE TOKEN of the FASTA header, not the whole description line --
+    `ano2bed6.awk` splits it. ANOtoBED emits the entire header, and leaving it would make every
+    fastan interval look like a different chromosome to `bedtools merge` than the other maskers'.
+"""
+
     lc = read_helper("tools/dustmasker/lc_classify.py")
     out["lc_classify.gxtool.yml"] = HEADER + f"""class: GalaxyUserTool
 id: brc-lc-classify
