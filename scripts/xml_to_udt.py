@@ -48,6 +48,18 @@ REFUSED (raises, naming the offending construct)
     only paths survive. Which of the two a wrapper needs is a judgement, so it is left to a human.
   * Anything at all that the translation did not consume (see the assertion above).
 
+⛔ A UDT ON usegalaxy.org GETS ONE CORE, AND THERE IS NO KNOB. Measured 2026-08-28 across five
+controlled runs of one byte-identical probe: with no `requirements` block the job runs and reports
+`GALAXY_SLOTS=1`, `nproc` 1, `sched_getaffinity` 1; adding a `resource` requirement makes it
+UNRUNNABLE -- "No destinations are available to fulfill request: user_defined-.*" -- and that holds
+for `cores_min: 4`, `cores_min: 2`, `ram_min: 8192` and even `cores_min: 1`. It is not a ceiling
+being clipped, it is the requirement being refused. `export GALAXY_SLOTS=8` inside the command does
+change the number the tool reads, and changes nothing else: `nproc` stays 1, so the tool would
+oversubscribe a single core. Threading flags in a converted wrapper are therefore cosmetic on the
+public server, and `hoist_brace_defaults()` preserves each wrapper's declared default only so that
+the SAME yaml stays correct on a Galaxy that does allocate cores (this repo's own
+`galaxy_config_job_conf.xml` hands every tool 16 slots and 60 GB).
+
 ⚠ CONTAINERS ARE LOOKED UP, NEVER DERIVED. A UDT has no conda resolution, and the biocontainer build
 suffix (`--<hash>_<build>`) is not predictable from the version. `CONTAINERS` below is a hand-checked
 map; an unlisted requirement raises rather than producing an image reference that will fail at pull
@@ -119,6 +131,48 @@ SHELL_ENV_OK = frozenset({
 #: BOTH job streams empty and no indication of which variable caused it. Measured 2026-08-28: the
 #: identical probe with braces failed and without braces returned `1`.
 BRACE_EXPANSION = re.compile(r"\$\{[^}]*\}")
+
+#: `${VAR:-default}`. The brace form is fatal, but the default it carries is the wrapper's own
+#: per-tool intent -- `fastan` asks for 4 threads, `iqtree3` for 2, the pangenome tools for 1 -- and
+#: dropping it during the rewrite would silently change what the tool does when GALAXY_SLOTS is
+#: absent. `hoist_brace_defaults()` preserves it in brace-free shell instead.
+BRACE_DEFAULT = re.compile(r"\$\{(\w+):-([^}]*)\}")
+
+
+def hoist_brace_defaults(cmd: str) -> tuple[str, str, set[str]]:
+    """Rewrite `${VAR:-N}` to a brace-free equivalent that keeps N.
+
+    Returns (cmd, preamble, aliases) -- `aliases` are the shell variables the preamble DEFINES, and
+    they must be handed to `assert_fully_translated` or it will refuse our own emission.
+
+    ⚠ THIS BUYS NO CPU, AND MUST NOT BE READ AS IF IT DID. Measured on usegalaxy.org 2026-08-28: a
+    UDT job gets `GALAXY_SLOTS=1`, `nproc` 1 and `sched_getaffinity` 1, and every `resource`
+    requirement -- even `cores_min: 1` -- is refused outright with "No destinations are available to
+    fulfill request: user_defined-.*". Exporting a larger GALAXY_SLOTS inside the command changes
+    the number the tool reads and nothing else, so a tool told it has 4 threads would oversubscribe
+    one core. What this function preserves is the wrapper's DECLARED default for environments that
+    do not set the variable at all; on usegalaxy.org the Galaxy-set 1 wins, which is correct.
+    """
+    found: dict[str, str] = {}
+    for var, dflt in BRACE_DEFAULT.findall(cmd):
+        if var not in SHELL_ENV_OK:
+            continue
+        if not re.fullmatch(r"\w+", dflt):
+            refuse(f"`${{{var}:-{dflt}}}` has a default this converter will not rewrite into shell "
+                   f"unquoted. Simplify it in the XML, or port this tool by hand.")
+        if found.get(var, dflt) != dflt:
+            refuse(f"`${var}` is written with two different defaults in one command "
+                   f"({found[var]!r} and {dflt!r}). Which one is intended is a judgement, not a "
+                   f"rewrite; make them agree in the XML.")
+        found[var] = dflt
+    preamble, aliases = [], set()
+    for var, dflt in sorted(found.items()):
+        alias = f"BRC_{var}"
+        aliases.add(alias)
+        # No braces anywhere in what we emit -- that is the whole point.
+        preamble.append(f'{alias}="${var}"; [ -n "${alias}" ] || {alias}={dflt}')
+        cmd = cmd.replace(f"${{{var}:-{dflt}}}", f"${alias}")
+    return cmd, ("\n".join(preamble) + "\n" if preamble else ""), aliases
 
 
 def refuse(msg: str) -> None:
@@ -247,7 +301,7 @@ def substitute(cmd: str, params: dict[str, ET.Element], outputs: dict[str, ET.El
     return cmd
 
 
-def assert_fully_translated(cmd: str) -> None:
+def assert_fully_translated(cmd: str, extra_ok: set[str] | None = None) -> None:
     """⛔ THE LOAD-BEARING CHECK. Refuse if anything untranslated survived.
 
     Every silent mistranslation this converter has produced was a construct that no refusal rule
@@ -276,8 +330,8 @@ def assert_fully_translated(cmd: str) -> None:
                f"  ⚠ A `:-default` cannot survive this rewrite; drop it, or port by hand.")
     for match in SURVIVING_VAR.finditer(residue):
         var = match.group(1)
-        if var in SHELL_ENV_OK:
-            continue  # measured as exported by the job container; passes through untouched
+        if var in SHELL_ENV_OK or var in (extra_ok or ()):
+            continue  # exported by the job container, or defined by our own preamble
         if var.startswith("GALAXY_"):
             refuse(f"`${var}` survived conversion. `udt/env_probe.gxtool.yml` measured which "
                    f"GALAXY_* variables a UDT container exports and this is not one of them, so it "
@@ -317,6 +371,9 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
     # only interpolates `$(...)`, so a bare `$` needs no protection here.
     cmd = cmd.replace("\\$", "$")
 
+    # Keep each wrapper's declared `:-N` before the brace check below rejects the syntax carrying it.
+    cmd, slots_preamble, slot_aliases = hoist_brace_defaults(cmd)
+
     scripts: list[tuple[str, str]] = []
     for name in sorted(set(re.findall(r"\$__tool_directory__/([\w.\-]+)", cmd))):
         p = tool_dir / name
@@ -330,8 +387,8 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
             f"$__tool_directory__/{name}", name)
 
     cmd = substitute(cmd, params, outputs)
-    assert_fully_translated(cmd)
-    return cmd.strip(), scripts
+    assert_fully_translated(cmd, slot_aliases)
+    return slots_preamble + cmd.strip(), scripts
 
 
 def main() -> int:
