@@ -198,6 +198,15 @@ steps:
       report:
         report_select: hist
         max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
   gcov_window:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_window
@@ -212,6 +221,15 @@ steps:
       report:
         report_select: hist
         max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
   gcov_tantan:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_tantan
@@ -226,6 +244,15 @@ steps:
       report:
         report_select: hist
         max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
   gcov_union:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_union
@@ -241,3 +268,12 @@ steps:
       report:
         report_select: hist
         max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false

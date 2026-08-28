@@ -181,7 +181,21 @@ def main() -> int:
 
     handles = gi.workflows.show_workflow(wf_id)["inputs"]
     inputs = {sid: {"src": "hdca", "id": hdca} for sid in handles}
-    inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history["id"])
+    # ⚠ allow_tool_state_corrections IS REQUIRED, and the reason is not obvious.
+    # Galaxy treats every parameter a `state:` block leaves unset as an "upgrade message" and
+    # REFUSES the whole invocation over it -- while the import succeeds silently, so the workflow
+    # looks correct in the editor and cannot run. gxformat2 `state:` blocks are conventionally
+    # partial (the committed softmask.gxwf.yml sets three keys on a tool with a dozen), so without
+    # this flag a portable workflow is unrunnable unless every default is transcribed by hand. That
+    # was three consecutive refusals here -- sort_bed, then genomecov, then merge_bed -- each
+    # naming a different set of untouched booleans.
+    #
+    # ⛔ IT IS NOT A BLANKET "IGNORE PROBLEMS" SWITCH, but it does mean tool defaults, not this
+    # file, decide any parameter the workflow does not name. Parameters that MATTER to the analysis
+    # are still set explicitly in the workflow (report_select, max, soft) precisely so that an
+    # upstream default change cannot move them silently.
+    inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history["id"],
+                                       allow_tool_state_corrections=True)
     base = gi.base_url
     print(f"  INVOKED {inv['id']} -> {base}/workflows/invocations/{inv['id']}")
     return await_invocation(gi, inv["id"])
