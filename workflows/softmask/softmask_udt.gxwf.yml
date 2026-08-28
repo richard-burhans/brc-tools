@@ -20,6 +20,24 @@ doc: >-
      renders an instance-resolved copy at run time. UUIDs are per-account facts and must not be
      committed.
 
+  ⛔ FastLTR AND FastTIR ARE DELIBERATELY ABSENT, AND NOT BECAUSE THEY WERE OVERLOOKED. Both ship in
+  the same `fastan` package as FasTAN and neither can produce a usable mask:
+
+    * FastLTR's `-M` emits a `.1ano` whose coordinates are NONDETERMINISTIC GARBAGE. Three runs of
+      the same binary over the same GDB gave end coordinates of 1,294,819,693 / 1,932,353,901 /
+      1,999,462,765 on a 319,920 nt sequence -- four thousand times the input, different every time,
+      which is the signature of uninitialised memory. Its records also carry 12 fields where
+      FasTAN's carry 6, so `ano2bed6.awk` mis-parses them silently. A single such interval would
+      swallow the merged union and mask the whole genome, and every job would exit 0.
+    * FastTIR has NO mask output at all. `FastTIR.c` parses `ARG_FLAGS("v")`; the `.1ano` strings in
+      it are usage boilerplate and a suffix check. It writes `.1aln` self-alignments, and turning
+      those into a mask is an analysis decision rather than a format conversion.
+
+  FasTAN on the SAME GDB returns sane six-field rows, so neither is a fault of the GDB stage. Both
+  tools are also undocumented in any publication -- the FastGA paper does not mention them. Revisit
+  if upstream fixes them; `fastan_gdb` is already built and proven at 101 Mb, so FastLTR would cost
+  one UDT and a converter that understands its record layout.
+
   ⛔ STILL NOT INCLUDED: masking_table + MultiQC. That wrapper reads `element_identifier` across
   five whole collections at once, which is exactly the shape where identifiers do not survive into
   a UDT. Everything else the original produces is here: all four masker tracks, the union, the
