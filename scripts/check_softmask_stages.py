@@ -45,15 +45,34 @@ class Checker:
         if not ok:
             self.failures.append(label)
 
-    def wait(self, job_id: str, label: str) -> dict:
-        while True:
+    def wait(self, job_id: str, label: str, ceiling: int = 3600) -> dict:
+        """Block until the job is terminal. ⛔ A failed job ABORTS -- it does not just get noted.
+
+        The previous version had no timeout (a stuck job hung the script forever with no output)
+        and, worse, only RECORDED a failure before returning: the caller then read the errored
+        job's empty output and `uppercase: no lowercase left` PASSED on zero bytes. A run reported
+        a mix of passes and failures in which the passes were meaningless.
+        """
+        deadline = time.monotonic() + ceiling
+        job = {}
+        while time.monotonic() < deadline:
             job = self.gi.jobs.show_job(job_id, full_details=True)
             if job.get("state") in ("ok", "error", "deleted", "paused"):
                 break
             time.sleep(8)
+        else:
+            self.check(label, False, f"no terminal state after {ceiling}s")
+            self.die(f"{label}: timed out")
         if job["state"] != "ok":
-            self.check(label, False, f"job {job['state']}: {(job.get('stderr') or '')[:120]}")
+            self.check(label, False, f"job {job['state']}: {(job.get('stderr') or '')[:160]}")
+            self.die(f"{label}: job {job['state']}")
         return job
+
+    def die(self, why: str) -> None:
+        """Stop the chain. Downstream checks on a failed step's output are worse than no checks."""
+        print(f"\n  ⛔ ABORTING: {why}")
+        print(f"     history: {self.gi.base_url}/histories/view?id={self.history}")
+        sys.exit(1)
 
     def text(self, dataset_id: str) -> str:
         body = self.gi.datasets.download_dataset(dataset_id, use_default_filename=False)
@@ -158,9 +177,17 @@ def main() -> int:
         print(f"\nSTAGE 3  {masker}")
         j = run_udt(gi, h["id"], uuids[masker], {"input": {"src": "hda", "id": upper_id}})
         c.wait(j["jobs"][0]["id"], f"{masker} job")
-        o = {gi.datasets.show_dataset(x["id"])["name"]: x["id"] for x in j["outputs"]}
-        bed_id = next(i for n, i in o.items() if "interval" in n.lower())
-        fa_id = next(i for n, i in o.items() if "uppercas" in n.lower())
+        # ⚠ Keyed on the OUTPUT NAME, not a substring of the label. The masker's second output is
+        # labelled "uppercased FASTA (feed to lc_classify alongside the intervals)", which also
+        # contains "interval" -- so matching the label made the choice depend on the order Galaxy
+        # happens to return outputs in, and a BED3 check could silently run against a FASTA.
+        o = {x.get("output_name") or gi.datasets.show_dataset(x["id"])["name"]: x["id"]
+             for x in j["outputs"]}
+        try:
+            bed_id, fa_id = o["intervals"], o["upper_fasta"]
+        except KeyError:
+            c.check(f"{masker}: declares intervals + upper_fasta", False, f"got {sorted(o)}")
+            c.die(f"{masker}: unexpected output names")
         bt = c.text(bed_id)
         rows = [l for l in bt.splitlines() if l.strip()]
         c.check(f"{masker}: emitted intervals", len(rows) > 0, f"{len(rows):,} BED3 rows")
@@ -181,12 +208,26 @@ def main() -> int:
                 f"{len(r6):,} BED6 vs {len(rows):,} BED3")
         c.check(f"lc_classify({masker}): 6 columns",
                 all(len(l.split("\t")) == 6 for l in r6[:200]), "BED6 shape")
-        scores = [int(l.split("\t")[4]) for l in r6[:500]]
+        # ⛔ NEVER let the detail string raise. `min([])` on an empty BED6 -- a job that exits 0
+        # and produces nothing, the headline silent failure in this module's docstring -- killed
+        # the script with a traceback instead of FAILING the check, and the preceding results were
+        # never summarised. A malformed row did the same via IndexError/ValueError.
+        scores, malformed = [], 0
+        for line in r6[:500]:
+            f = line.split("\t")
+            try:
+                scores.append(int(f[4]))
+            except (IndexError, ValueError):
+                malformed += 1
+        c.check(f"lc_classify({masker}): rows parse as BED6", malformed == 0 and bool(r6),
+                f"{malformed} malformed of {len(r6[:500])} sampled"
+                if r6 else "EMPTY OUTPUT (job exited 0 and produced nothing)")
         c.check(f"lc_classify({masker}): scores in 0-1000",
-                all(0 <= s <= 1000 for s in scores), f"min {min(scores)} max {max(scores)}")
-        kinds = {l.split("\t")[3] for l in r6[:500]}
+                bool(scores) and all(0 <= s <= 1000 for s in scores),
+                f"min {min(scores)} max {max(scores)}" if scores else "no parseable scores")
+        kinds = {f[3] for f in (line.split("\t") for line in r6[:500]) if len(f) > 3}
         c.check(f"lc_classify({masker}): signatures present", bool(kinds),
-                ", ".join(sorted(kinds)[:6]))
+                ", ".join(sorted(kinds)[:6]) if kinds else "none")
         beds[masker] = j2["outputs"][0]["id"]
 
     print("\n" + "=" * 78)

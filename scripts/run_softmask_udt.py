@@ -116,6 +116,24 @@ COMPRESSION_EXT = (".gz", ".bz2", ".xz", ".zst")
 SEQUENCE_EXT = (".fasta", ".fna", ".fas", ".fa", ".seq")
 
 
+def await_dataset(gi: GalaxyInstance, dataset_id: str, label: str, tries: int = 1200) -> None:
+    """Block until a dataset is ready, and DIE if it errored or never settled.
+
+    ⛔ `state in ("ok", "error")` IS NOT A READINESS TEST. It was used as one here, so an upload
+    that failed -- bad format detection, truncated transfer -- became a collection element and the
+    whole workflow ran on it. Exhausting the retries fell through just as silently.
+    """
+    for _ in range(tries):
+        state = gi.datasets.show_dataset(dataset_id)["state"]
+        if state == "ok":
+            return
+        if state in ("error", "discarded", "failed_metadata"):
+            info = gi.datasets.show_dataset(dataset_id).get("misc_info") or ""
+            sys.exit(f"{label} is in state {state!r} and cannot be used: {info[:200]}")
+        time.sleep(5)
+    sys.exit(f"{label} never became ready after {tries * 5}s (last state {state!r}).")
+
+
 def collection_name(path: pathlib.Path) -> str:
     """The strain key for a collection element: the filename with its sequence suffixes removed.
 
@@ -155,11 +173,8 @@ def upload_collection(gi: GalaxyInstance, history_id: str, fastas: list[pathlib.
         ftype = "fasta.gz" if p.suffix == ".gz" else "fasta"
         up = gi.tools.upload_file(str(p), history_id, file_type=ftype)
         ids.append((collection_name(p), up["outputs"][0]["id"]))
-    for _, ds in ids:
-        for _ in range(1200):          # a 100 MB upload takes minutes, not seconds
-            if gi.datasets.show_dataset(ds)["state"] in ("ok", "error"):
-                break
-            time.sleep(5)
+    for nm, ds in ids:
+        await_dataset(gi, ds, f"upload {nm!r}")   # a 100 MB upload takes minutes, not seconds
     desc = {"collection_type": "list", "name": "assemblies",
             "element_identifiers": [{"name": n, "src": "hda", "id": i} for n, i in ids]}
     hdca = gi.histories.create_dataset_collection(history_id, desc)
@@ -168,30 +183,53 @@ def upload_collection(gi: GalaxyInstance, history_id: str, fastas: list[pathlib.
 
 
 def await_invocation(gi: GalaxyInstance, invocation_id: str) -> int:
-    """Report EVERY step's state, never a single roll-up.
+    """Wait for every job to reach a terminal state, then report EVERY step. 0 iff all jobs are ok.
 
-    A workflow that runs nine of twelve steps and fails three is not "failed" in any useful sense;
-    which steps failed is the whole content of the result.
+    ⛔ A TIMEOUT IS A FAILURE, NOT A PASS. The previous version polled `while now < deadline` and
+    then fell straight into the reporting block, where an invocation step's `state` of `scheduled`
+    counted as OK -- so a run that exhausted POLL_CEILING with jobs still executing exited 0. The
+    one thing this function exists to report is whether the run finished, and it reported success
+    for a run that had not.
+
+    ⛔ AND THE PASS/FAIL DECISION READS JOB STATES, NOT STEP STATES. An invocation step's `state` is
+    its SCHEDULING state (`new`/`ready`/`scheduled`); a step whose job died still reads `scheduled`.
+    The step list is printed for orientation only. The verdict comes from the job-state summary.
+
+    ⚠ The wait cannot stop at "all current jobs are terminal" either: with a mapped-over collection
+    Galaxy creates jobs incrementally, so `{"ok": 1}` is reachable while most of the graph has not
+    been scheduled yet. It waits for the INVOCATION to leave `new`/`ready` as well.
     """
     deadline = time.monotonic() + POLL_CEILING
+    timed_out = True
     while time.monotonic() < deadline:
-        summary = gi.invocations.get_invocation_summary(invocation_id)
-        states = summary.get("states", {})
-        if states and not (states.get("new") or states.get("queued") or states.get("running")):
+        detail = gi.invocations.show_invocation(invocation_id)
+        states = gi.invocations.get_invocation_summary(invocation_id).get("states", {})
+        pending = {k: v for k, v in states.items() if k in ("new", "queued", "running", "paused")}
+        scheduling_done = detail.get("state") in ("scheduled", "cancelled", "failed")
+        if scheduling_done and states and not pending:
+            timed_out = False
             break
-        print(f"    ... {states}")
+        print(f"    ... invocation={detail.get('state')} jobs={states or '{}'}")
         time.sleep(POLL_SECONDS)
+
     detail = gi.invocations.show_invocation(invocation_id)
-    failed = 0
+    states = gi.invocations.get_invocation_summary(invocation_id).get("states", {})
     for step in detail.get("steps", []):
-        js = step.get("state") or "-"
         label = step.get("workflow_step_label") or f"step {step.get('order_index')}"
-        flag = "" if js in ("scheduled", "ok", "-") else "  <-- NOT OK"
-        if flag:
-            failed += 1
-        print(f"    {label:24} {js}{flag}")
-    print(f"  invocation state: {detail.get('state')}  |  jobs: {gi.invocations.get_invocation_summary(invocation_id).get('states')}")
-    return 1 if failed else 0
+        print(f"    {label:24} {step.get('state') or '-'}")
+    print(f"  invocation state: {detail.get('state')}  |  jobs: {states or '{}'}")
+
+    if timed_out:
+        print(f"  ⛔ TIMED OUT after {POLL_CEILING}s with jobs still pending -- NOT a pass.")
+        return 1
+    bad = {k: v for k, v in states.items() if k != "ok"}
+    if bad:
+        print(f"  ⛔ jobs did not all succeed: {bad}")
+        return 1
+    if not states:
+        print("  ⛔ the invocation produced NO jobs at all -- nothing ran.")
+        return 1
+    return 0
 
 
 def main() -> int:

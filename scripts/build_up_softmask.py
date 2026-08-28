@@ -29,8 +29,9 @@ from bioblend.galaxy import GalaxyInstance
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / "workflows/softmask/softmask_udt.gxwf.yml"
 UDT_DIR = ROOT / "udt"
+TIER_CEILING = 7200          # 2 h per tier; a real chromosome is slow and single-threaded
 UDTS = ("fasta_uppercase", "dustmasker_bed3", "windowmasker_bed3", "tantan_bed3",
-        "lc_classify", "samtools_faidx")
+        "lc_classify", "samtools_faidx", "fastan_gdb", "fastan_scan", "fastan_bed")
 
 #: Cumulative tiers. Each names the steps present; outputs are pruned to whatever survives.
 TIERS = [
@@ -38,16 +39,19 @@ TIERS = [
     ("2 + reference index", ["uppercase", "faidx_ref"]),
     ("3 + one masker + classify", ["uppercase", "faidx_ref", "dustmasker_bed3",
                                    "dustmasker_classify"]),
-    ("4 + all three maskers", ["uppercase", "faidx_ref", "dustmasker_bed3", "dustmasker_classify",
+    ("4 + all four maskers", ["uppercase", "faidx_ref", "dustmasker_bed3", "dustmasker_classify",
                                "windowmasker_bed3", "windowmasker_classify",
-                               "tantan_bed3", "tantan_classify"]),
+                               "tantan_bed3", "tantan_classify",
+                               "fastan_gdb", "fastan_scan", "fastan_bed"]),
     ("5 + union/sort/merge", ["uppercase", "faidx_ref", "dustmasker_bed3", "dustmasker_classify",
                               "windowmasker_bed3", "windowmasker_classify",
                               "tantan_bed3", "tantan_classify",
+                              "fastan_gdb", "fastan_scan", "fastan_bed",
                               "union_cat", "sort_bed", "merge_bed"]),
     ("6 + maskfasta + faidx", ["uppercase", "faidx_ref", "dustmasker_bed3", "dustmasker_classify",
                                "windowmasker_bed3", "windowmasker_classify",
                                "tantan_bed3", "tantan_classify",
+                               "fastan_gdb", "fastan_scan", "fastan_bed",
                                "union_cat", "sort_bed", "merge_bed", "maskfasta", "faidx"]),
     ("7 everything (+ genomecov)", None),   # None = keep every step
 ]
@@ -69,6 +73,24 @@ def register_all(gi: GalaxyInstance) -> dict[str, str]:
         out[doc["id"]] = created["uuid"]
     print(f"  registered {len(out)} UDT(s)")
     return out
+
+
+def await_dataset(gi: GalaxyInstance, dataset_id: str, label: str, tries: int = 1200) -> None:
+    """Block until a dataset is ready, and DIE if it errored or never settled.
+
+    ⛔ `state in ("ok", "error")` IS NOT A READINESS TEST. It was used as one here, so an upload
+    that failed -- bad format detection, truncated transfer -- became a collection element and the
+    whole workflow ran on it. Exhausting the retries fell through just as silently.
+    """
+    for _ in range(tries):
+        state = gi.datasets.show_dataset(dataset_id)["state"]
+        if state == "ok":
+            return
+        if state in ("error", "discarded", "failed_metadata"):
+            info = gi.datasets.show_dataset(dataset_id).get("misc_info") or ""
+            sys.exit(f"{label} is in state {state!r} and cannot be used: {info[:200]}")
+        time.sleep(5)
+    sys.exit(f"{label} never became ready after {tries * 5}s (last state {state!r}).")
 
 
 def prune(doc: dict, keep: list[str] | None) -> dict:
@@ -100,6 +122,19 @@ def render(gi: GalaxyInstance, doc: dict, uuids: dict[str, str]) -> str:
 
 
 def run_tier(gi: GalaxyInstance, wf_id: str, hdca: str, history: str) -> tuple[bool, str]:
+    """Invoke one tier and wait it out. True only if every job it created succeeded.
+
+    ⛔ A TIMEOUT IS A FAILURE AND SO IS AN EMPTY JOB SET. The previous version polled to a deadline,
+    then computed `bad = {states in (error, paused, deleted)}` and returned `not bad` -- so a tier
+    that hit the deadline with `{"running": 3}` returned TRUE and the script advanced, and a tier
+    that produced no jobs at all (`states == {}`) also returned TRUE. This is the one script whose
+    whole purpose is to say exactly how far the graph is sound, and it would have said "all of it"
+    for a run that never finished.
+
+    ⚠ It waits on the INVOCATION leaving `new`/`ready` too, not just on the jobs created so far:
+    with a mapped-over collection Galaxy schedules jobs incrementally, so an early `{"ok": 1}` says
+    nothing about the rest of the tier.
+    """
     handles = gi.workflows.show_workflow(wf_id)["inputs"]
     inputs = {sid: {"src": "hdca", "id": hdca} for sid in handles}
     try:
@@ -107,17 +142,28 @@ def run_tier(gi: GalaxyInstance, wf_id: str, hdca: str, history: str) -> tuple[b
                                            allow_tool_state_corrections=True)
     except Exception as e:  # noqa: BLE001 - a tier reports whatever refused it, not one class
         return False, f"INVOKE REFUSED: {str(e)[:260]}"
-    # wait for every job to reach a terminal state
-    deadline = time.monotonic() + 2400
+
+    deadline = time.monotonic() + TIER_CEILING
+    timed_out = True
     while time.monotonic() < deadline:
+        detail = gi.invocations.show_invocation(inv["id"])
         states = gi.invocations.get_invocation_summary(inv["id"]).get("states", {})
-        if states and not (states.get("new") or states.get("queued") or states.get("running")):
+        pending = {k: v for k, v in states.items() if k in ("new", "queued", "running", "paused")}
+        if detail.get("state") in ("scheduled", "cancelled", "failed") and states and not pending:
+            timed_out = False
             break
         time.sleep(15)
+
     states = gi.invocations.get_invocation_summary(inv["id"]).get("states", {})
-    bad = {k: v for k, v in states.items() if k in ("error", "paused", "deleted")}
     url = f"{gi.base_url}/workflows/invocations/{inv['id']}"
-    return (not bad), (f"jobs {states}  {url}" if not bad else f"FAILED jobs {states}  {url}")
+    if timed_out:
+        return False, f"TIMED OUT after {TIER_CEILING}s, jobs {states or '{}'}  {url}"
+    if not states:
+        return False, f"NO JOBS created by this tier  {url}"
+    bad = {k: v for k, v in states.items() if k != "ok"}
+    if bad:
+        return False, f"FAILED jobs {states}  {url}"
+    return True, f"jobs {states}  {url}"
 
 
 def main() -> int:
@@ -135,10 +181,7 @@ def main() -> int:
     print(f"  history {gi.base_url}/histories/view?id={h['id']}")
     up = gi.tools.paste_content(args.fasta.read_text(encoding="utf-8"), h["id"], file_type="fasta")
     ds = up["outputs"][0]["id"]
-    for _ in range(80):
-        if gi.datasets.show_dataset(ds)["state"] in ("ok", "error"):
-            break
-        time.sleep(3)
+    await_dataset(gi, ds, f"upload {args.fasta.name!r}")
     hdca = gi.histories.create_dataset_collection(h["id"], {
         "collection_type": "list", "name": "assemblies",
         "element_identifiers": [{"name": args.fasta.stem, "src": "hda", "id": ds}]})["id"]
