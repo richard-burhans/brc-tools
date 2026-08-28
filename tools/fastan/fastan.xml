@@ -1,14 +1,18 @@
 <tool id="fastan" name="fastan" version="0.8+galaxy0" profile="23.0">
     <description>FASTAN tandem-repeat arrays as content-annotated BED6</description>
     <!--
-      NOTE: bioconda fastan 0.5 does not implement masking (-m); the .1ano tandem
-      annotation requires the 0.8 line, and FASTGA's ANOtoBED converter is not in the
-      fastga 1.5 conda package yet. Until bioconda ships fastan 0.8 + ANOtoBED
-      (see bioconda-recipes PR #66389) this wrapper calls locally-built binaries
-      under /data/galaxy_local/bin (NFS-shared, node-readable). Flip to conda
-      requirements once those land.
+      Dependencies come from bioconda. Both of the blockers this wrapper was written
+      around have since been resolved upstream:
+        * fastan 0.8 (masking-enabled, -m / .1ano) shipped in bioconda-recipes PR #66389,
+          merged 2026-06-17; bioconda now offers 0.5 and 0.8.
+        * ANOtoBED IS installed by the fastga 1.5 package; see its build.sh, which
+          installs ANOtoBED, BEDtoANO, ANOstat and ANOshow alongside FAtoGDB.
+      FAtoGDB and ANOtoBED come from fastga; FasTAN comes from fastan.
     -->
-    <requirements/>
+    <requirements>
+        <requirement type="package" version="0.8">fastan</requirement>
+        <requirement type="package" version="1.5">fastga</requirement>
+    </requirements>
     <command detect_errors="exit_code"><![CDATA[
 set -o pipefail &&
 #if str($input.ext) == 'fasta.gz'
@@ -17,9 +21,9 @@ set -o pipefail &&
     cat '$input'
 #end if
 | awk '/^>/{print;next}{print toupper(\$0)}' > in.fa &&
-/data/galaxy_local/bin/FAtoGDB in.fa gdb || true ;
-/data/galaxy_local/bin/FasTAN -m -p -T\${GALAXY_SLOTS:-4} gdb &&
-/data/galaxy_local/bin/ANOtoBED gdb.1ano
+FAtoGDB in.fa gdb || true ;
+FasTAN -m -p -T\${GALAXY_SLOTS:-4} gdb &&
+ANOtoBED gdb.1ano
 | grep -v '^#'
 | awk -f '$__tool_directory__/ano2bed6.awk'
 | LC_ALL=C sort -k1,1 -k2,2n > '$output'
