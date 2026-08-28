@@ -92,7 +92,7 @@ def main() -> int:
         print("  stderr:", (job.get("stderr") or "(empty)")[:600])
         print("  stdout:", (job.get("stdout") or "(empty)")[:300])
         return 1
-    out = list(job["outputs"].values())[0]
+    out = next(iter(job["outputs"].values()))
     d = gi.datasets.show_dataset(out["id"])
     print(f"  output: {d.get('extension')} {d.get('file_size')} bytes")
     body = gi.datasets.download_dataset(d["id"], use_default_filename=False)

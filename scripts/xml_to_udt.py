@@ -10,22 +10,43 @@ so the XML stays the single source.
 ⛔ IT REFUSES RATHER THAN GUESSES, AND THAT IS THE WHOLE DESIGN. Cheetah is a templating language and
 `shell_command` is not; a converter that silently mistranslates a `#for` loop or an
 `element_identifier` reference would emit a tool that RUNS and is WRONG, which is worse than one that
-does not exist. So the supported subset is enumerated below and everything else raises.
+does not exist.
+
+⛔ THE REFUSAL IS ENFORCED BY A COMPLETENESS ASSERTION, NOT BY A LIST OF KNOWN-BAD CONSTRUCTS.
+`assert_fully_translated()` rejects the result if ANY `$name` / `${name}` / `#directive` survives
+conversion. This is the load-bearing check and it is deliberately the last thing that runs: an
+enumeration of what to refuse can only ever cover the constructs somebody thought of, and the three
+that were missed all produced tools that ran and were wrong ---
+
+  * `#set $in_ext = ...` was not in the refusal list, so it passed through into `shell_command`,
+    where a leading `#` is a SHELL COMMENT. `${in_ext}` was then undefined and
+    `ln -sf … 'input.${in_ext}'` created a file called `input.` (tools/longdust, tools/sdust).
+  * Only SINGLE-QUOTED `'$var'` was rewritten, so `longdust -k$k -w$w -t$t` reached the container
+    verbatim and every flag ran with an empty argument.
+  * Only an output literally named `output` was recognised, so tools/sdust's `out_bed` became
+    `$(inputs.out_bed.path)` --- the tool's OUTPUT addressed as an INPUT path that does not exist.
+
+None of the three raised anything. An assertion that nothing untranslated survives catches all of
+them, and the next one too.
 
 SUPPORTED
   * `#if str($x.ext) == 'fasta.gz' / #else / #end if` around a gunzip-or-cat — the only Cheetah
-    conditional these wrappers use. Rewritten as `gzip -cdf`, which handles both.
+    conditional these wrappers use. Rewritten as a portable test-and-branch.
   * `$__tool_directory__/<script>` — the script is INLINED as a heredoc. A UDT has no tool
     directory, and these scripts are 364 B to 2.7 kB, far too small to justify an image.
-  * `$input` / `$output` scalars and data paths.
+  * `<param type="data">` -> `$(inputs.<name>.path)`.
+  * `<param>` scalars (integer/float/text/select) -> `$(inputs.<name>)`.
+  * `<param type="boolean" truevalue= falsevalue=>` -> `$(inputs.<name> ? '<t>' : '<f>')`, which is
+    the UDT idiom; `truevalue`/`falsevalue` have no meaning in a UDT.
+  * `<data>` outputs -> a work-dir filename claimed by `from_work_dir`.
 
-REFUSED (raises, with the offending construct named)
-  * `#for` loops.
+REFUSED (raises, naming the offending construct)
+  * `#for` loops, `#set`, and every other Cheetah directive.
   * `element_identifier`. ⚠ Galaxy DOES expose it to a UDT as `$(inputs["<name>|__identifier__"])`
     when the tool is MAPPED over a collection — verified empirically on usegalaxy.org 26.1,
     2026-08-28 — but NOT when a `multiple: true` input consumes a whole collection in one job, where
     only paths survive. Which of the two a wrapper needs is a judgement, so it is left to a human.
-  * Any other `#...` Cheetah directive.
+  * Anything at all that the translation did not consume (see the assertion above).
 
 ⚠ CONTAINERS ARE LOOKED UP, NEVER DERIVED. A UDT has no conda resolution, and the biocontainer build
 suffix (`--<hash>_<build>`) is not predictable from the version. `CONTAINERS` below is a hand-checked
@@ -50,10 +71,32 @@ CONTAINERS = {
     ("python", "3.12"): "quay.io/biocontainers/python:3.12",
 }
 
-CHEETAH_OK = re.compile(r"#(if|else|end if)\b")
+#: Cheetah directive keywords. Only the `#if`/`#else`/`#end if` gzip idiom is handled; every other
+#: one is a refusal. ⛔ `#set` is in this list because its ABSENCE was the first silent
+#: mistranslation (see the module docstring) --- but the completeness assertion, not this list, is
+#: what makes the refusal trustworthy.
+CHEETAH_DIRECTIVES = (
+    "if", "else", "elif", "end", "for", "while", "repeat", "unless", "set", "echo", "silent",
+    "import", "from", "def", "block", "include", "raw", "try", "except", "finally", "pass",
+    "break", "continue", "attr", "compiler", "call", "filter", "assert", "del", "return",
+)
+CHEETAH_RE = re.compile(rf"#\s*({'|'.join(CHEETAH_DIRECTIVES)})\b")
+
 GZIP_BLOCK = re.compile(
     r"#if\s+str\(\$(\w+)\.ext\)\s*==\s*'fasta\.gz'\s*"
-    r"gunzip -c '\$\1'\s*#else\s*cat '\$\1'\s*#end if", re.S)
+    r"gunzip -c '\$\1'\s*#else\s*cat '\$\1'\s*#end if", re.DOTALL)
+
+#: Our own emissions, which the completeness assertion must not flag.
+GALAXY_EXPR = re.compile(r"\$\([^)]*\)")
+#: A surviving template reference: `$name` or `${name}`, starting with a letter or underscore.
+#: ⚠ `$0`/`$1` are NOT matched --- those are awk positionals, legitimate after the un-escaping
+#: below, and flagging them would refuse every wrapper that pipes through awk.
+SURVIVING_VAR = re.compile(r"\$\{?([A-Za-z_]\w*)")
+
+#: Environment variables the container runtime provides, which pass through a `shell_command`
+#: unchanged and are NOT untranslated templates. Kept as an explicit allowlist rather than an
+#: "is it upper-case?" heuristic, because `$GALAXY_SLOTS` is upper-case and is NOT one of these.
+SHELL_ENV_OK = frozenset({"TMPDIR", "HOME", "PWD", "PATH", "USER", "SHELL", "LANG", "LC_ALL"})
 
 
 def refuse(msg: str) -> None:
@@ -108,10 +151,115 @@ def container_for(root: ET.Element) -> str:
     return ""
 
 
-def convert_command(cmd: str, tool_dir: pathlib.Path) -> tuple[str, list[tuple[str, str]]]:
+def param_name(el: ET.Element) -> str | None:
+    """The name Galaxy will address a param by.
+
+    ⚠ `name` IS OPTIONAL. tools/longdust declares every tunable as `<param argument="-k" …>` with no
+    `name`, and Galaxy derives `k` from the argument. A converter that reads only `name` sees nine
+    unnamed params, translates none of them, and emits `longdust -k$k -w$w …` verbatim.
+    """
+    if el.get("name"):
+        return el.get("name")
+    arg = el.get("argument")
+    if arg:
+        return arg.lstrip("-").replace("-", "_")
+    return None
+
+
+def collect_io(root: ET.Element) -> tuple[dict[str, ET.Element], dict[str, ET.Element]]:
+    """Params and outputs, scoped to `<inputs>`/`<outputs>`.
+
+    ⚠ SCOPED DELIBERATELY. `root.iter("param")` also walks `<test>` blocks, where params carry a
+    `name` and a `value` but no `type` -- so a test fixture can shadow a real param, and the count
+    of "inputs" silently includes rows that are not inputs at all.
+    """
+    params: dict[str, ET.Element] = {}
+    inputs_el = root.find("inputs")
+    if inputs_el is not None:
+        for el in inputs_el.iter("param"):
+            name = param_name(el)
+            if name:
+                params[name] = el
+    outputs: dict[str, ET.Element] = {}
+    outputs_el = root.find("outputs")
+    if outputs_el is not None:
+        for el in outputs_el.iter("data"):
+            if el.get("name"):
+                outputs[el.get("name")] = el
+    return params, outputs
+
+
+def workdir_file(name: str, el: ET.Element) -> str:
+    """The work-dir filename a UDT output is claimed from.
+
+    Honours the XML's own `from_work_dir` when it declares one -- tools/build_trackdb writes
+    `selection_strict.bed` and never redirects to `$output`, so hardcoding one filename for every
+    output both loses that name and gives every output of a multi-output wrapper the same source.
+    """
+    return el.get("from_work_dir") or f"{name}.dat"
+
+
+def substitute(cmd: str, params: dict[str, ET.Element], outputs: dict[str, ET.Element]) -> str:
+    """Replace every `$name`/`${name}` the XML declares. Longest first, so `$input2` survives `$input`."""
+    for name in sorted(set(params) | set(outputs), key=len, reverse=True):
+        if name in outputs:
+            repl = workdir_file(name, outputs[name])
+            quoted = f"'{repl}'"
+        else:
+            el = params[name]
+            ptype = el.get("type")
+            if ptype == "data":
+                quoted = repl = f"'$(inputs.{name}.path)'"
+            elif ptype == "boolean":
+                tv, fv = el.get("truevalue", ""), el.get("falsevalue", "")
+                if "'" in tv or "'" in fv:
+                    refuse(f"boolean param `{name}` has a quote in its truevalue/falsevalue, which "
+                           f"cannot be embedded in the UDT ternary; port this one by hand.")
+                quoted = repl = f"$(inputs.{name} ? '{tv}' : '{fv}')"
+            else:
+                quoted = repl = f"$(inputs.{name})"
+        # Quoted forms first, so the quotes are consumed rather than left wrapping the expression.
+        cmd = cmd.replace(f"'${name}'", quoted).replace(f"'${{{name}}}'", quoted)
+        cmd = re.sub(rf"\$\{{{re.escape(name)}\}}", repl, cmd)
+        cmd = re.sub(rf"\${re.escape(name)}\b", repl, cmd)
+    return cmd
+
+
+def assert_fully_translated(cmd: str) -> None:
+    """⛔ THE LOAD-BEARING CHECK. Refuse if anything untranslated survived.
+
+    Every silent mistranslation this converter has produced was a construct that no refusal rule
+    named. This inverts that: instead of enumerating what is forbidden, require that the output
+    contain nothing that still looks like a template. See the module docstring for the three.
+    """
+    directive = CHEETAH_RE.search(cmd)
+    if directive:
+        line = next((ln.strip() for ln in cmd.splitlines() if directive.group(0) in ln), "")
+        refuse(f"the Cheetah directive `{directive.group(0)}` survived conversion — in a "
+               f"`shell_command` a leading `#` is a COMMENT, so this would be silently dropped and "
+               f"any variable it defines would be empty.\n"
+               f"  offending line: {line}\n"
+               f"  `shell_command` has no templating; restructure the XML or port this by hand.")
+    # Blank out our own `$(...)` emissions before looking for leftovers.
+    residue = GALAXY_EXPR.sub("", cmd)
+    for match in SURVIVING_VAR.finditer(residue):
+        var = match.group(1)
+        if var in SHELL_ENV_OK:
+            continue  # provided by the container runtime; passes through untouched
+        if var.startswith("GALAXY_"):
+            refuse(f"`${var}` survived conversion. In a classic wrapper Galaxy substitutes this at "
+                   f"TEMPLATE time; a `shell_command` is not templated, so it would be read as a "
+                   f"shell environment variable instead — and whether the UDT job container exports "
+                   f"it is not something this converter can verify. Substitute a literal (e.g. a "
+                   f"fixed thread count) in the XML, or port this tool by hand.")
+        refuse(f"`${var}` survived conversion — it matches no `<param>` or `<data>` in "
+               f"this XML, so it would reach the container as an undefined shell variable and expand "
+               f"to the empty string. Declare it, or port this tool by hand.")
+
+
+def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Element],
+                    outputs: dict[str, ET.Element]) -> tuple[str, list[tuple[str, str]]]:
     """Cheetah command -> shell_command, plus the scripts that must be inlined."""
-    if "#for" in cmd:
-        refuse("the command contains a `#for` loop; `shell_command` has no loop construct.")
     if "element_identifier" in cmd:
         refuse("the command reads `element_identifier`. A UDT mapped over a collection CAN read it "
                "as $(inputs[\"<name>|__identifier__\"]), but a multiple-input job cannot — decide "
@@ -132,11 +280,6 @@ def convert_command(cmd: str, tool_dir: pathlib.Path) -> tuple[str, list[tuple[s
         cmd = GZIP_BLOCK.sub(
             f"{{ if gzip -t '$(inputs.{v}.path)' 2>/dev/null; "
             f"then gzip -cd '$(inputs.{v}.path)'; else cat '$(inputs.{v}.path)'; fi; }}", collapsed)
-    leftover = CHEETAH_OK.search(cmd)
-    if leftover:
-        refuse(f"unhandled Cheetah directive `{leftover.group(0)}` remains after conversion.")
-    if "#" in re.sub(r"#\w*of\d+|#[0-9a-fA-F]{6}", "", cmd):
-        pass  # bare '#' inside quoted awk is fine; the directive checks above are what matter
 
     # ⛔ UNESCAPE CHEETAH'S BACKSLASHES. The XML writes `\$0` so Cheetah does not eat the `$`; in a
     # shell_command there is no Cheetah, so `\$0` reaches awk literally and is a syntax error. Galaxy
@@ -148,20 +291,15 @@ def convert_command(cmd: str, tool_dir: pathlib.Path) -> tuple[str, list[tuple[s
         p = tool_dir / name
         if not p.is_file():
             refuse(f"command references {name} but {p} does not exist")
-        body = p.read_text().rstrip("\n")
+        body = p.read_text(encoding="utf-8").rstrip("\n")
         if "$(" in body:
             refuse(f"{name} contains `$(`, which Galaxy would interpolate inside the heredoc")
         scripts.append((name, body))
         cmd = cmd.replace(f"'$__tool_directory__/{name}'", name).replace(
             f"$__tool_directory__/{name}", name)
 
-    # Remaining `$name` -> data path or scalar. Do the longest names first so $input2 is not
-    # clobbered by $input.
-    for var in sorted(set(re.findall(r"\$(\w+)", cmd)), key=len, reverse=True):
-        if var in ("output",):
-            cmd = re.sub(rf"'\${var}'", "out.dat", cmd)
-        else:
-            cmd = re.sub(rf"'\${var}'", f"'$(inputs.{var}.path)'", cmd)
+    cmd = substitute(cmd, params, outputs)
+    assert_fully_translated(cmd)
     return cmd.strip(), scripts
 
 
@@ -177,7 +315,10 @@ def main() -> int:
     cmd_el = root.find("command")
     if cmd_el is None or not cmd_el.text:
         refuse("no <command> element")
-    body, scripts = convert_command(cmd_el.text, tool_dir)
+    params, out_els = collect_io(root)
+    if not out_els:
+        refuse("no <data> output to claim with from_work_dir")
+    body, scripts = convert_command(cmd_el.text, tool_dir, params, out_els)
     check_single_runtime(body, container_for(root))
 
     heredocs = "".join(
@@ -187,21 +328,50 @@ def main() -> int:
     shell = heredocs + prefix + body + "\n"
 
     inputs = []
-    for p in root.iter("param"):
-        if p.get("type") == "data":
-            inputs.append({"name": p.get("name"), "type": "data",
-                           "format": (p.get("format") or "data").split(",")[0],
-                           "label": p.get("label") or p.get("name")})
-    outs = []
-    for d in root.iter("data"):
-        outs.append({"name": d.get("name"), "type": "data",
-                     "format": d.get("format") or "data",
-                     "from_work_dir": "out.dat",
-                     "label": (d.get("label") or d.get("name")).replace("${tool.name}", root.get("name"))})
-    if not outs:
-        refuse("no <data> output to claim with from_work_dir")
+    for name, el in params.items():
+        ptype = el.get("type")
+        if ptype == "data":
+            # ⚠ The WHOLE format list, not the first entry. `format="fasta,fasta.gz"` split to
+            # `fasta` makes a gzipped genome unselectable in the form -- and every masking wrapper
+            # here accepts both.
+            inputs.append({"name": name, "type": "data",
+                           "format": el.get("format") or "data",
+                           "label": el.get("label") or name})
+            continue
+        spec = {"name": name, "type": ptype or "text", "label": el.get("label") or name}
+        if ptype == "boolean":
+            # `checked` is the XML spelling; a UDT boolean carries a plain `value`.
+            spec["value"] = el.get("checked", "false") == "true"
+        else:
+            # Emit numbers as numbers. A quoted `value: '7'` on an integer param is a string in the
+            # generated YAML, and the form then rejects its own default.
+            cast = {"integer": int, "float": float}.get(ptype)
+            for key in ("value", "min", "max"):
+                raw = el.get(key)
+                if raw is None:
+                    continue
+                spec[key] = cast(raw) if cast else raw
+        opts = list(el.iter("option"))
+        if opts:
+            spec["options"] = [{"label": (o.text or o.get("value")).strip(),
+                                "value": o.get("value"),
+                                "selected": o.get("selected") == "true"} for o in opts]
+        inputs.append(spec)
 
+    outs = [{"name": name, "type": "data",
+             "format": el.get("format") or "data",
+             "from_work_dir": workdir_file(name, el),
+             "label": (el.get("label") or name).replace("${tool.name}", root.get("name"))}
+            for name, el in out_els.items()]
+
+    # ⚠ DEFERRED DELIBERATELY, not an oversight. PyYAML is needed only to EMIT, and every refusal
+    # path above exits before reaching here. The repo installs it explicitly in CI
+    # (.github/workflows/pages.yml) but the ambient python3 on a dev box generally does not have it,
+    # and for the wrappers in this repo REFUSING is the common outcome -- all five masking tools
+    # refuse today. Importing at module scope turns every one of those clean refusals into a
+    # ModuleNotFoundError traceback, which is a worse tool for the case that actually happens.
     import yaml
+
     doc = {
         "class": "GalaxyUserTool", "id": f"brc-{root.get('id')}".replace("_", "-"),
         "name": f"{root.get('name')} (BRC UDT)",
