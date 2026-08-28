@@ -35,7 +35,7 @@ shell_command: |
   BRC_AWK
   set -o pipefail
   cp '$(inputs.ano.path)' scan.1ano
-  ANOtoBED scan.1ano | grep -v '^#' | awk -f ano2bed6.awk \
+  ANOtoBED scan.1ano | { grep -v '^#' || [ $? -eq 1 ]; } | awk -f ano2bed6.awk \
     | LC_ALL=C sort -k1,1 -k2,2n > annotated.bed6
 inputs:
   - name: ano
@@ -51,6 +51,12 @@ outputs:
 help:
   format: markdown
   content: |
+    ⛔ **`grep -v` IS GUARDED, AND THE GUARD IS NOT DECORATION.** `grep` exits 1 when it selects no
+    lines, `set -o pipefail` is in force, and this is the last command in the tool -- so a sequence
+    with NO tandem arrays would fail the job outright when the correct answer is an empty BED6.
+    `{ grep -v ... || [ $? -eq 1 ]; }` tolerates "nothing matched" while still failing on grep's
+    exit 2, which is a real error.
+
     ⚠ **`ANOtoBED` does NOT need the GDB** -- the sequence names are carried inside the `.1ano`, so
     only stage 2 consumes the tarball. Verified by running it in a directory containing nothing but
     the annotation.

@@ -98,8 +98,12 @@ GZIP_BLOCK = re.compile(
     r"#if\s+str\(\$(\w+)\.ext\)\s*==\s*'fasta\.gz'\s*"
     r"gunzip -c '\$\1'\s*#else\s*cat '\$\1'\s*#end if", re.DOTALL)
 
-#: Our own emissions, which the completeness assertion must not flag.
-GALAXY_EXPR = re.compile(r"\$\([^)]*\)")
+#: OUR OWN emissions only -- `$(inputs...)`. ⚠ Deliberately NOT a general `\$\([^)]*\)`: blanking
+#: every `$( )` let a wrapper's genuine shell command substitution through the completeness check,
+#: which contradicts this module's own rule for inlined scripts (`convert_command` refuses `$(` in a
+#: heredoc because Galaxy interpolates it). Galaxy claims `$( )` for templating; a shell
+#: substitution in a `shell_command` is not shell, it is a Galaxy expression that will not evaluate.
+GALAXY_EXPR = re.compile(r"\$\(inputs[^)]*\)")
 #: A surviving template reference: `$name` or `${name}`, starting with a letter or underscore.
 #: ⚠ `$0`/`$1` are NOT matched --- those are awk positionals, legitimate after the un-escaping
 #: below, and flagging them would refuse every wrapper that pipes through awk.
@@ -265,6 +269,31 @@ def collect_io(root: ET.Element) -> tuple[dict[str, ET.Element], dict[str, ET.El
     return params, outputs
 
 
+def clean_label(raw: str, tool_name: str) -> str:
+    """Render an output label, refusing any `${...}` the UDT cannot resolve.
+
+    ⛔ THE COMMAND IS NOT THE ONLY PLACE `${...}` IS FATAL. Every masking wrapper here writes
+    `label="${tool.name} on ${on_string}: ..."`, and only `${tool.name}` was ever rewritten -- so
+    `${on_string}` reached the emitted YAML verbatim. `assert_fully_translated()` never saw it
+    because it inspects the command alone. Galaxy claims the brace form for its own templating (see
+    BRACE_EXPANSION), so at best the label reads as literal garbage and at worst the tool will not
+    register, with both job streams empty and nothing naming the cause.
+
+    `${on_string}` is dropped rather than translated: it names the inputs a classic job ran on, and
+    a UDT has no equivalent. Anything else raises rather than being guessed at.
+    """
+    label = raw.replace("${tool.name}", tool_name)
+    # "X on ${on_string}: Y" -> "X: Y"; a bare "${on_string}" just goes.
+    label = re.sub(r"\s+on\s+\$\{on_string\}", "", label)
+    label = label.replace("${on_string}", "").strip()
+    leftover = re.search(r"\$\{[^}]*\}", label)
+    if leftover:
+        refuse(f"the output label {raw!r} contains `{leftover.group(0)}`, which a UDT cannot "
+               f"resolve -- the brace form is Galaxy's own templating and is fatal in a UDT. "
+               f"Simplify the label in the XML, or port this tool by hand.")
+    return label
+
+
 def workdir_file(name: str, el: ET.Element) -> str:
     """The work-dir filename a UDT output is claimed from.
 
@@ -293,7 +322,13 @@ def substitute(cmd: str, params: dict[str, ET.Element], outputs: dict[str, ET.El
                            f"cannot be embedded in the UDT ternary; port this one by hand.")
                 quoted = repl = f"$(inputs.{name} ? '{tv}' : '{fv}')"
             else:
-                quoted = repl = f"$(inputs.{name})"
+                # ⚠ THE QUOTED FORM KEEPS ITS QUOTES. Only the boolean ternary above may drop them,
+                # because an empty `falsevalue` has to vanish from the command line entirely. For a
+                # text/select/number param the quotes in the XML are load-bearing: a value of
+                # `-r 0.01` would word-split into two argv entries without them, and one containing
+                # `;` or a backtick would be arbitrary shell in the job container.
+                quoted = f"'$(inputs.{name})'"
+                repl = f"$(inputs.{name})"
         # Quoted forms first, so the quotes are consumed rather than left wrapping the expression.
         cmd = cmd.replace(f"'${name}'", quoted).replace(f"'${{{name}}}'", quoted)
         cmd = re.sub(rf"\$\{{{re.escape(name)}\}}", repl, cmd)
@@ -316,8 +351,14 @@ def assert_fully_translated(cmd: str, extra_ok: set[str] | None = None) -> None:
                f"any variable it defines would be empty.\n"
                f"  offending line: {line}\n"
                f"  `shell_command` has no templating; restructure the XML or port this by hand.")
-    # Blank out our own `$(...)` emissions before looking for leftovers.
+    # Blank out our own `$(inputs...)` emissions before looking for leftovers.
     residue = GALAXY_EXPR.sub("", cmd)
+    stray = re.search(r"\$\([^)]*\)", residue)
+    if stray:
+        refuse(f"`{stray.group(0)}` is a shell command substitution, and Galaxy claims `$( )` for "
+               f"its own templating -- it will be interpreted as an expression, not run by the "
+               f"shell. This module already refuses `$(` inside an inlined script for the same "
+               f"reason. Rewrite it with backticks, which pass through untouched, or port by hand.")
     brace = BRACE_EXPANSION.search(residue)
     if brace:
         inner = brace.group(0)[2:-1]
@@ -351,8 +392,19 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
                "which shape this tool needs and port it by hand.")
 
     # The one supported conditional: gunzip-or-cat on a possibly-gzipped FASTA.
-    collapsed = re.sub(r"\s+", " ", cmd)
-    m = GZIP_BLOCK.search(collapsed)
+    #
+    # ⛔ DO NOT COLLAPSE WHITESPACE TO MAKE THIS MATCH. An earlier version ran
+    # `re.sub(r"\s+", " ", cmd)` over the WHOLE command and then substituted into the collapsed
+    # copy, which silently joined every newline-separated statement into one line: a wrapper whose
+    # command continued `> in.fa` / `tantan in.fa > '$output'` on later lines emitted
+    # `{ ... fi; } > in.fa tantan in.fa > 'output.dat'`, one command in which `tantan` and its
+    # arguments are extra operands of the brace group. It exits 0 and writes an empty output, and
+    # `assert_fully_translated()` CANNOT SEE IT because nothing untranslated survives -- exactly the
+    # class of failure this module exists to prevent.
+    #
+    # The collapse was never necessary: GZIP_BLOCK already spans newlines via `\s*`/`\s+`, so it
+    # matches the original text directly. Verified against tools/dustmasker/dustmasker.xml.
+    m = GZIP_BLOCK.search(cmd)
     if m:
         # ⛔ NOT `gzip -cdf`. GNU gzip copies unrecognised input through when given --stdout, but the
         # gzip in the blast biocontainer does not -- it fails with `gzip: invalid magic` on a plain
@@ -364,7 +416,7 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
         # ECMAScript. This is plain shell and must stay plain shell.
         cmd = GZIP_BLOCK.sub(
             f"{{ if gzip -t '$(inputs.{v}.path)' 2>/dev/null; "
-            f"then gzip -cd '$(inputs.{v}.path)'; else cat '$(inputs.{v}.path)'; fi; }}", collapsed)
+            f"then gzip -cd '$(inputs.{v}.path)'; else cat '$(inputs.{v}.path)'; fi; }}", cmd)
 
     # ⛔ UNESCAPE CHEETAH'S BACKSLASHES. The XML writes `\$0` so Cheetah does not eat the `$`; in a
     # shell_command there is no Cheetah, so `\$0` reaches awk literally and is a syntax error. Galaxy
@@ -449,7 +501,7 @@ def main() -> int:
     outs = [{"name": name, "type": "data",
              "format": el.get("format") or "data",
              "from_work_dir": workdir_file(name, el),
-             "label": (el.get("label") or name).replace("${tool.name}", root.get("name"))}
+             "label": clean_label(el.get("label") or name, root.get("name") or "")}
             for name, el in out_els.items()]
 
     # ⚠ DEFERRED DELIBERATELY, not an oversight. PyYAML is needed only to EMIT, and every refusal

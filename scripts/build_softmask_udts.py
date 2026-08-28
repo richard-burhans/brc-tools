@@ -319,7 +319,7 @@ shell_command: |
   set -o pipefail
   cp '$(inputs.gdb.path)' gdb.tar
   tar xf gdb.tar
-  FasTAN -m -p -T$GALAXY_SLOTS -oscan gdb
+  FasTAN -m -p -T1 -oscan gdb
 inputs:
   - name: gdb
     type: data
@@ -338,9 +338,25 @@ help:
     usage line, but with masking on it exits *"The source must be a GDB when masking (-m) is on"*.
     That is why stage 1 exists rather than this tool reading the assembly directly.
 
-    ⚠ `$GALAXY_SLOTS` is read bare, never as `${GALAXY_SLOTS}` -- the brace form is fatal in a UDT.
-    On usegalaxy.org it is 1. **`FasTAN` is unaffected by the FASTAN v0.8 double-free** that aborts
-    `FastTIR`/`FastLTR` at any thread count above 1; measured clean at -T1, -T2 and -T4.
+    ⛔ **`-T1` IS HARDCODED, DELIBERATELY, AND IT IS A PLACEHOLDER.** Three reasons, in order of
+    how badly each bites:
+
+    * `$GALAXY_SLOTS` HAS NO FALLBACK HERE. Written bare it is correct on usegalaxy.org (measured:
+      the variable is exported, value 1) and collapses to a lone `-T` anywhere it is unset -- at
+      which point FasTAN either errors or swallows `-oscan` as its thread count. The classic
+      wrapper writes `${GALAXY_SLOTS:-4}` precisely to avoid that, and the brace form is fatal in a
+      UDT, so there is no direct translation.
+    * SIBLING TOOLS IN THIS PACKAGE ABORT ABOVE ONE THREAD. FASTAN v0.8's `FastTIR` and `FastLTR`
+      die with `free(): double free detected in tcache 2` at any `-T` over 1, including their own
+      default of 8. `FasTAN` itself is UNAFFECTED -- measured clean at -T1, -T2 and -T4 -- so this
+      line costs it real parallelism. It is pinned anyway so that every tool built on this package
+      behaves the same way until the upstream fix ships.
+    * A GALAXY THAT GRANTS MORE SLOTS MAKES IT WORSE, NOT BETTER. This repo's own
+      `galaxy_config_job_conf.xml` hands every tool 16 slots, so `-T$GALAXY_SLOTS` would be a live
+      crash there for the sibling tools while looking fine on the public server.
+
+    Revisit once a fixed FASTAN reaches bioconda; then this becomes `-T$GALAXY_SLOTS` with a
+    measured fallback rather than a constant.
 """
 
     out["fastan_bed.gxtool.yml"] = HEADER + f"""class: GalaxyUserTool
@@ -355,7 +371,7 @@ shell_command: |
   BRC_AWK
   set -o pipefail
   cp '$(inputs.ano.path)' scan.1ano
-  ANOtoBED scan.1ano | grep -v '^#' | awk -f ano2bed6.awk \\
+  ANOtoBED scan.1ano | {{ grep -v '^#' || [ $? -eq 1 ]; }} | awk -f ano2bed6.awk \\
     | LC_ALL=C sort -k1,1 -k2,2n > annotated.bed6
 inputs:
   - name: ano
@@ -371,6 +387,12 @@ outputs:
 help:
   format: markdown
   content: |
+    ⛔ **`grep -v` IS GUARDED, AND THE GUARD IS NOT DECORATION.** `grep` exits 1 when it selects no
+    lines, `set -o pipefail` is in force, and this is the last command in the tool -- so a sequence
+    with NO tandem arrays would fail the job outright when the correct answer is an empty BED6.
+    `{{ grep -v ... || [ $? -eq 1 ]; }}` tolerates "nothing matched" while still failing on grep's
+    exit 2, which is a real error.
+
     ⚠ **`ANOtoBED` does NOT need the GDB** -- the sequence names are carried inside the `.1ano`, so
     only stage 2 consumes the tarball. Verified by running it in a directory containing nothing but
     the annotation.

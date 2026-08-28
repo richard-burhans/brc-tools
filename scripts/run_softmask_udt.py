@@ -45,9 +45,9 @@ WORKFLOW = ROOT / "workflows/softmask/softmask_udt.gxwf.yml"
 UDT_DIR = ROOT / "udt"
 #: Only the tools this workflow uses. `env_probe` lives in udt/ too and is a diagnostic.
 UDTS = ("fasta_uppercase", "dustmasker_bed3", "windowmasker_bed3", "tantan_bed3",
-        "lc_classify", "samtools_faidx")
+        "lc_classify", "samtools_faidx", "fastan_gdb", "fastan_scan", "fastan_bed")
 POLL_SECONDS = 20
-POLL_CEILING = 3600
+POLL_CEILING = 21600          # 6 h: a 101 Mb chromosome, single-threaded, two-pass windowmasker
 
 
 def connect() -> GalaxyInstance:
@@ -111,16 +111,55 @@ def render_and_import(gi: GalaxyInstance, uuids: dict[str, str], work: pathlib.P
     return imported["id"]
 
 
+#: Suffixes stripped to derive an element identifier, longest first within each group.
+COMPRESSION_EXT = (".gz", ".bz2", ".xz", ".zst")
+SEQUENCE_EXT = (".fasta", ".fna", ".fas", ".fa", ".seq")
+
+
+def collection_name(path: pathlib.Path) -> str:
+    """The strain key for a collection element: the filename with its sequence suffixes removed.
+
+    ⛔ NOT `pathlib.suffixes`, WHICH SPLITS ON EVERY DOT. `"".join(p.suffixes)` turns
+    `GCA_900626175.2_cs10_genomic.fna` into `GCA_900626175` -- it treats `.2_cs10_genomic` as a
+    suffix. Two versions of one strain (`PvP01.v1.fa.gz`, `PvP01.v2.fa.gz`) then collapse to the
+    SAME identifier, and a list collection with duplicate element identifiers is a silent data
+    error: the element identifier is the strain key every downstream track and
+    `verify_softmask_outputs.py` joins on.
+    """
+    name = path.name
+    for ext in COMPRESSION_EXT:
+        if name.lower().endswith(ext):
+            name = name[: -len(ext)]
+            break
+    for ext in SEQUENCE_EXT:
+        if name.lower().endswith(ext):
+            name = name[: -len(ext)]
+            break
+    return name or path.name
+
+
 def upload_collection(gi: GalaxyInstance, history_id: str, fastas: list[pathlib.Path]) -> str:
+    """Upload each FASTA and gather them into a list collection keyed by filename stem.
+
+    ⚠ upload_file, NOT paste_content. paste_content reads the whole file into memory and posts it
+    as a form field, which is fine for a test chunk and wrong for a real assembly -- cs10 chromosome
+    1 alone is 102 MB and a whole genome is ~900 MB. It also cannot carry gzip: the bytes would be
+    decoded as text.
+
+    ⚠ The datatype is chosen from the SUFFIX, and it matters. Declaring a .gz file as `fasta` makes
+    Galaxy hand the compressed bytes to the first tool as though they were sequence; declaring it
+    `fasta.gz` lets Galaxy decompress or pass through as each tool needs.
+    """
     ids = []
     for p in fastas:
-        up = gi.tools.paste_content(p.read_text(encoding="utf-8"), history_id, file_type="fasta")
-        ids.append((p.stem, up["outputs"][0]["id"]))
+        ftype = "fasta.gz" if p.suffix == ".gz" else "fasta"
+        up = gi.tools.upload_file(str(p), history_id, file_type=ftype)
+        ids.append((collection_name(p), up["outputs"][0]["id"]))
     for _, ds in ids:
-        for _ in range(80):
+        for _ in range(1200):          # a 100 MB upload takes minutes, not seconds
             if gi.datasets.show_dataset(ds)["state"] in ("ok", "error"):
                 break
-            time.sleep(3)
+            time.sleep(5)
     desc = {"collection_type": "list", "name": "assemblies",
             "element_identifiers": [{"name": n, "src": "hda", "id": i} for n, i in ids]}
     hdca = gi.histories.create_dataset_collection(history_id, desc)
