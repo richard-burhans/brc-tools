@@ -87,21 +87,79 @@ def fasta_stats(t: str) -> tuple[int, int]:
     return res, low
 
 
-def bed_span(t: str) -> int:
-    """Bases covered. ⚠ Assumes MERGED input; overlapping intervals would double-count."""
-    total = 0
-    for line in t.splitlines():
+def bed_intervals(t: str) -> set[tuple[str, int, int]]:
+    """Parse a BED into a set of (chrom, start, end).
+
+    ⛔ POSITIONS, NOT A TOTAL. This used to return only the summed width, and the check compared
+    that against the masked FASTA's lowercase COUNT. Equal totals do not mean the same bases: an
+    adversarial pass showed the old form certifying four wrong pipelines as correct -- intervals at
+    0-10 against lowercase at 50-60, an off-by-one, a mask applied to the wrong chromosome, and an
+    empty BED against an entirely unmasked FASTA. All four printed "delta +0 MATCH".
+
+    ⚠ Track/browser/comment lines are REFUSED rather than skipped. Silently ignoring them would
+    under-count, which is the same class of error one level down.
+    """
+    out: set[tuple[str, int, int]] = set()
+    for n, line in enumerate(t.splitlines(), 1):
+        if not line.strip():
+            continue
+        if line.startswith(("#", "track", "browser")):
+            sys.exit(f"BED line {n} is a {line.split()[0]!r} line; this verifier expects a plain "
+                     f"merged BED and will not silently skip it: {line[:60]!r}")
         f = line.split("\t")
-        if len(f) >= 3:
-            total += int(f[2]) - int(f[1])
-    return total
+        if len(f) < 3:
+            sys.exit(f"BED line {n} has {len(f)} fields, need at least 3: {line[:60]!r}")
+        try:
+            out.add((f[0], int(f[1]), int(f[2])))
+        except ValueError:
+            sys.exit(f"BED line {n} has non-integer coordinates: {line[:60]!r}")
+    return out
+
+
+def lowercase_runs(t: str) -> set[tuple[str, int, int]]:
+    """Maximal lowercase runs of a FASTA, as (chrom, start, end) in BED half-open coordinates.
+
+    ⚠ The chrom is the FIRST WHITESPACE TOKEN of the header, because that is what bedtools writes
+    into the BED it produced. `bedtools maskfasta` also TRUNCATES the header to exactly that token,
+    so the masked FASTA and its own intervals agree by construction -- but the uppercased input does
+    not have truncated headers, and comparing the two naively would mismatch on description text.
+    """
+    runs: set[tuple[str, int, int]] = set()
+    chrom, pos, start = None, 0, None
+    for line in t.splitlines():
+        if line.startswith(">"):
+            if chrom is not None and start is not None:
+                runs.add((chrom, start, pos))
+            chrom, pos, start = line[1:].split()[0] if len(line) > 1 else "", 0, None
+            continue
+        for ch in line:
+            if "a" <= ch <= "z":
+                if start is None:
+                    start = pos
+            elif start is not None:
+                runs.add((chrom, start, pos))
+                start = None
+            pos += 1
+    if chrom is not None and start is not None:
+        runs.add((chrom, start, pos))
+    return runs
+
+
+def span(intervals: set[tuple[str, int, int]]) -> int:
+    return sum(e - s for _, s, e in intervals)
 
 
 def resolve(gi: GalaxyInstance, invocation_id: str) -> dict[str, str]:
     """Map the three declared output names to collection ids, all from ONE invocation."""
     inv = gi.invocations.show_invocation(invocation_id)
-    if inv.get("state") not in TERMINAL_INVOCATION_STATES:
-        print(f"  ⚠ invocation state is {inv.get('state')!r}, which is not terminal -- "
+    state = inv.get("state")
+    # ⛔ TERMINAL IS NOT THE SAME AS SOUND. The tuple means "Galaxy will create no further jobs",
+    # which is the right wait condition elsewhere -- but `failed` and `cancelled` are terminal too,
+    # and certifying a cancelled run's partly-populated collections would be worse than useless.
+    if state in ("failed", "cancelled"):
+        sys.exit(f"invocation {invocation_id} is in state {state!r}; refusing to verify it.")
+    if state not in TERMINAL_INVOCATION_STATES:
+        print(f"  ⚠ invocation state is {state!r}, which is not terminal -- "
               f"results below may be from an incomplete run.")
     cols = inv.get("output_collections") or {}
     missing = [n for n in (UPPER_OUT, UNION_OUT, MASKED_OUT) if n not in cols]
@@ -139,24 +197,52 @@ def main() -> int:
     print("  union BED coverage vs masked-FASTA lowercase -- derived independently\n")
     failures = 0
     for s in strains:
-        covered = bed_span(text(gi, mg_e[s]))
-        res, low = fasta_stats(text(gi, mk_e[s]))
+        union = bed_intervals(text(gi, mg_e[s]))
+        masked_text = text(gi, mk_e[s])
+        applied = lowercase_runs(masked_text)
+        res, low = fasta_stats(masked_text)
         ures, ulow = fasta_stats(text(gi, up_e[s]))
+        if res == 0:
+            print(f"    {s}\n      ⛔ masked FASTA is EMPTY")
+            failures += 1
+            continue
+
         ok_upper = (ulow == 0 and ures == res)
-        ok_mask = (covered == low)
+        # ⛔ AN EMPTY MASK IS A FAILURE, NOT A MATCH. Nothing masked against nothing computed is
+        # 0 == 0, and the old total-based check printed ✅ for it -- certifying a run in which the
+        # mask was never applied at all.
+        ok_nonempty = bool(union)
+        only_computed = union - applied
+        only_applied = applied - union
+        ok_mask = ok_nonempty and not only_computed and not only_applied
         failures += (not ok_upper) + (not ok_mask)
+
         print(f"    {s}")
         print(f"      uppercased input : {ures:,} nt, {ulow} lowercase"
               f"        {'ok' if ok_upper else '⛔ NOT UPPERCASE / LENGTH CHANGED'}")
-        print(f"      merged union BED : {covered:,} nt ({covered / res:.2%})")
-        print(f"      masked FASTA     : {low:,} lowercase ({low / res:.2%})")
-        print(f"      delta            : {low - covered:+,}"
-              f"        {'MATCH' if ok_mask else '⛔ applied mask != computed mask'}")
+        print(f"      merged union BED : {span(union):,} nt in {len(union):,} intervals "
+              f"({span(union) / res:.2%})")
+        print(f"      masked FASTA     : {low:,} lowercase in {len(applied):,} runs "
+              f"({low / res:.2%})")
+        if not ok_nonempty:
+            print("      ⛔ the union is EMPTY -- nothing was masked, which is not a pass")
+        elif ok_mask:
+            print("      positions        : IDENTICAL interval-for-interval")
+        else:
+            print(f"      ⛔ computed-but-not-applied: {len(only_computed):,} intervals, "
+                  f"{span(only_computed):,} nt")
+            print(f"      ⛔ applied-but-not-computed: {len(only_applied):,} intervals, "
+                  f"{span(only_applied):,} nt")
+            for iv in sorted(only_computed)[:3]:
+                print(f"          only in BED  : {iv}")
+            for iv in sorted(only_applied)[:3]:
+                print(f"          only in FASTA: {iv}")
     print()
     if failures:
         print(f"  ⛔ {failures} check(s) FAILED across {len(strains)} strain(s)")
         return 1
-    print(f"  ✅ {len(strains)} strain(s): the mask applied is exactly the mask computed")
+    print(f"  ✅ {len(strains)} strain(s): the mask applied is exactly the mask computed, "
+          f"interval for interval")
     return 0
 
 

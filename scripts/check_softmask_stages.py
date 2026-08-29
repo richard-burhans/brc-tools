@@ -156,8 +156,8 @@ def main() -> int:
     c.check("uppercase: no lowercase left", l1 == 0, f"{l1} lowercase residues")
     c.check("uppercase: residues preserved", r1 == r0, f"{r1:,} vs {r0:,}")
     c.check("uppercase: sequences preserved", s1 == s0, f"{s1} vs {s0}")
-    names0 = [l for l in src_text.splitlines() if l.startswith(">")]
-    names1 = [l for l in ut.splitlines() if l.startswith(">")]
+    names0 = [line for line in src_text.splitlines() if line.startswith(">")]
+    names1 = [line for line in ut.splitlines() if line.startswith(">")]
     c.check("uppercase: headers UNTOUCHED", names0 == names1,
             "case-sensitive ids intact" if names0 == names1 else "HEADERS REWRITTEN")
 
@@ -168,7 +168,7 @@ def main() -> int:
     outs = {gi.datasets.show_dataset(o["id"])["name"]: o["id"] for o in j["outputs"]}
     sizes_id = next(i for n, i in outs.items() if "chrom" in n.lower() or "length" in n.lower())
     sizes = c.text(sizes_id)
-    tot = sum(int(l.split("\t")[1]) for l in sizes.splitlines() if l.strip())
+    tot = sum(int(line.split("\t")[1]) for line in sizes.splitlines() if line.strip())
     c.check("faidx: total length == residues", tot == r1, f"{tot:,} vs {r1:,}")
 
     # ---- stage 3: the three maskers ---------------------------------------------------------
@@ -189,9 +189,9 @@ def main() -> int:
             c.check(f"{masker}: declares intervals + upper_fasta", False, f"got {sorted(o)}")
             c.die(f"{masker}: unexpected output names")
         bt = c.text(bed_id)
-        rows = [l for l in bt.splitlines() if l.strip()]
+        rows = [line for line in bt.splitlines() if line.strip()]
         c.check(f"{masker}: emitted intervals", len(rows) > 0, f"{len(rows):,} BED3 rows")
-        c.check(f"{masker}: 3 columns", all(len(l.split("\t")) == 3 for l in rows[:200]),
+        c.check(f"{masker}: 3 columns", all(len(line.split("\t")) == 3 for line in rows[:200]),
                 "BED3 shape")
         c.check(f"{masker}: within bounds", bed_span(bt) <= r1,
                 f"{bed_span(bt):,} nt covered ({bed_span(bt)/r1:.1%})")
@@ -203,11 +203,11 @@ def main() -> int:
                      {"fasta": {"src": "hda", "id": fa_id}, "intervals": {"src": "hda", "id": bed_id}})
         c.wait(j2["jobs"][0]["id"], f"lc_classify({masker}) job")
         b6 = c.text(j2["outputs"][0]["id"])
-        r6 = [l for l in b6.splitlines() if l.strip()]
+        r6 = [line for line in b6.splitlines() if line.strip()]
         c.check(f"lc_classify({masker}): row count preserved", len(r6) == len(rows),
                 f"{len(r6):,} BED6 vs {len(rows):,} BED3")
         c.check(f"lc_classify({masker}): 6 columns",
-                all(len(l.split("\t")) == 6 for l in r6[:200]), "BED6 shape")
+                all(len(line.split("\t")) == 6 for line in r6[:200]), "BED6 shape")
         # ⛔ NEVER let the detail string raise. `min([])` on an empty BED6 -- a job that exits 0
         # and produces nothing, the headline silent failure in this module's docstring -- killed
         # the script with a traceback instead of FAILING the check, and the preceding results were

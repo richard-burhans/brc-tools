@@ -1,0 +1,45 @@
+# Lint config for the scripts in this repo. Run: ruff check scripts/
+#
+# Adopted from the sibling cannabis-genome survey repo so that scripts shared
+# between the two are held to one standard. Same reasoning applies here: this is
+# a set of runnable scripts, not an installable package, so a standalone
+# ruff.toml rather than a [tool.ruff] block in an otherwise-empty pyproject.toml.
+#
+# ⚠ WITHOUT THIS FILE RUFF RUNS ITS DEFAULTS, WHICH IS A MUCH NARROWER RULE SET
+# (E4/E7/E9/F). A run reporting "All checks passed" against the defaults says
+# very little, and said it here for some time.
+target-version = "py312"
+line-length = 120
+
+[lint]
+# Beyond ruff's default E4/E7/E9/F: import hygiene (I), modern syntax (UP),
+# likely bugs (B), simplification (SIM), pathlib over os.path (PTH),
+# comprehensions (C4), and blind-except detection (BLE) -- the rule that matters
+# most for the Galaxy drivers here, where a swallowed exception turns into a
+# workflow silently reported as fine.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "PTH", "C4", "BLE", "RUF", "PIE", "DTZ", "EXE", "FURB",
+          # unused arguments: a parameter nothing reads advertises a data
+          # dependency that does not exist.
+          "ARG"]
+
+ignore = [
+    # Long f-strings and explanatory comments dominate the generators here;
+    # line-length is set generously above and E501 on top of that is noise.
+    "E501",
+    # Ambiguous-unicode checks. The help text and refusal messages deliberately
+    # use typographic characters, and "fixing" them would mangle prose that is
+    # rendered to users in the Galaxy tool form.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[lint.per-file-ignores]
+# The tier harness and the workflow drivers each keep one deliberate broad-except
+# boundary, so that a failure is REPORTED per tier rather than aborting the run.
+# Those sites carry an inline noqa with the rationale; this is the escape hatch
+# for adding another, and should stay rare.
+
+[lint.pylint]
+# Run the nesting check explicitly; PLR1702 is a preview rule and enabling
+# `preview` to reach it would turn on every other preview rule too:
+#   ruff check --preview --select PLR1702 scripts/
+max-nested-blocks = 4

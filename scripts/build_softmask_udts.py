@@ -264,7 +264,8 @@ help:
     internally.** The maskers uppercase their own working copy, so the BED tracks are computed on
     unmasked sequence and are correct either way. But `bedtools maskfasta -soft` was applied to the
     ORIGINAL assembly, which lowercases the union intervals *on top of whatever was already
-    lowercase*. For an assembly that arrives soft-masked -- cs10 ships **46.8%** masked from NCBI,
+    lowercase*. For an assembly that arrives soft-masked -- cs10 ships **46.8%** masked from NCBI
+    genome-wide, which on chromosome 1 is 34.6% of all bases or **47.8% of its non-N bases**,
     while the other assemblies here are 0.0-0.7% -- the published `softmasked_fasta` was then the
     union of this workflow's mask AND NCBI's, indistinguishably. Feeding the uppercased FASTA to
     `maskfasta` makes the output exactly the mask this workflow computed.

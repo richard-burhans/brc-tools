@@ -205,7 +205,7 @@ def check_single_runtime(cmd: str, container: str) -> None:
     if not needed:
         return
     pkg = container.split("/")[-1].split(":")[0]
-    if pkg in ("python",) or any(r.startswith(pkg) for r in needed):
+    if pkg == "python" or any(r.startswith(pkg) for r in needed):
         return
     refuse(f"the command invokes {needed[0]} but the image is `{container}`, a single-package "
            f"container for `{pkg}` which does not carry it (verified for blast on 2026-08-28: "

@@ -70,7 +70,7 @@ outputs:
     doc: >-
       The uppercased assemblies every masker and `maskfasta` actually saw. Published so the mask can
       be verified against the sequence it was applied to rather than against the original, which may
-      have arrived carrying a mask of its own (cs10 ships 46.8% soft-masked).
+      have arrived carrying a mask of its own (cs10 ships 46.8% soft-masked genome-wide (reports/repeat_and_masking_2026-08-27.md); on chromosome 1 that is 34.6% of all bases, or 47.8% of its non-N bases, the chromosome being 27.7% N).
 
 steps:
   # ---- strip any pre-existing mask ---------------------------------------------------------
@@ -82,7 +82,7 @@ steps:
       ⛔ NOT redundant with the maskers' own internal uppercasing. Each masker uppercases its
       private working copy, so the BED tracks were always computed on unmasked sequence. But
       `maskfasta -soft` was applied to the ORIGINAL assembly, lowercasing the union intervals ON TOP
-      of whatever was already lowercase -- and cs10 ships 46.8% soft-masked from NCBI. The published
+      of whatever was already lowercase -- and cs10 ships 46.8% soft-masked genome-wide (reports/repeat_and_masking_2026-08-27.md); on chromosome 1 that is 34.6% of all bases, or 47.8% of its non-N bases, the chromosome being 27.7% N. The published
       softmasked FASTA was therefore the union of this workflow's mask AND NCBI's, with no way to
       tell them apart. Everything downstream now starts from uppercase.
     in:
