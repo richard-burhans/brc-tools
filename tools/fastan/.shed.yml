@@ -9,10 +9,14 @@ long_description: |
   unit identity on a 0-1000 grayscale, strand = the real orientation. The input
   is upper-cased first, so calls are computed de novo.
 
-  Dependencies resolve from bioconda: FAtoGDB and ANOtoBED from fastga 1.5,
-  FasTAN from fastan 0.8. Both blockers this wrapper was originally written
-  around are resolved upstream -- fastan 0.8 carries masking (-m / .1ano), and
-  fastga 1.5's build.sh installs ANOtoBED alongside FAtoGDB.
+  Dependencies resolve from bioconda: FAtoGDB and ANOtoBED from fastga
+  1.5.20260729, FasTAN from fastan 0.8. Both blockers this wrapper was originally
+  written around are resolved upstream -- fastan 0.8 carries masking (-m / .1ano),
+  and fastga's build.sh installs ANOtoBED alongside FAtoGDB.
+
+  The fastga pin is a dated post-1.5 build rather than the 1.5 tag because released
+  1.5 contains ANOtoBED but cannot read the .1ano that FasTAN writes: the ano schema
+  changed after v1.5 was tagged and no release has followed.
 name: fastan
 owner: nekrut
 homepage_url: https://github.com/thegenemyers/FASTAN
