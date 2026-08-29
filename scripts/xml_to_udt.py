@@ -42,10 +42,19 @@ SUPPORTED
 
 REFUSED (raises, naming the offending construct)
   * `#for` loops, `#set`, and every other Cheetah directive.
-  * `element_identifier`. ⚠ Galaxy DOES expose it to a UDT as `$(inputs["<name>|__identifier__"])`
-    when the tool is MAPPED over a collection — verified empirically on usegalaxy.org 26.1,
-    2026-08-28 — but NOT when a `multiple: true` input consumes a whole collection in one job, where
-    only paths survive. Which of the two a wrapper needs is a judgement, so it is left to a human.
+  * `element_identifier`, in BOTH its shapes, but for different reasons and with different advice.
+    ⚠ AN EARLIER VERSION REFUSED BOTH WITH ONE BLANKET MESSAGE saying identifiers do not survive
+    into a UDT. That is not true, and it implied a dozen wrappers were unportable when at most two
+    are. Measured on usegalaxy.org, same tool and same collection, both routes:
+
+        route            $(inputs["x|__identifier__"])   $(inputs.x.basename)
+        /api/tools       StrainAlpha                     "Pasted Entry"  (the HDA name)
+        workflow         absent -> job fails             StrainAlpha     (the identifier)
+
+    So a MAPPED, single-reference use is portable in a workflow via `basename` -- and reading the
+    same expression through the tool API silently gives the dataset's name instead, which is why
+    this is still a refusal rather than an automatic rewrite. A WHOLE-COLLECTION comprehension
+    (`#echo " ".join([... for $el in $x])`) is genuinely unportable: that job sees only paths.
   * Anything at all that the translation did not consume (see the assertion above).
 
 ⛔ A UDT ON usegalaxy.org GETS ONE CORE, AND THERE IS NO KNOB. Measured 2026-08-28 across five
@@ -371,9 +380,20 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
                     outputs: dict[str, ET.Element]) -> tuple[str, list[tuple[str, str]]]:
     """Cheetah command -> shell_command, plus the scripts that must be inlined."""
     if "element_identifier" in cmd:
-        refuse("the command reads `element_identifier`. A UDT mapped over a collection CAN read it "
-               "as $(inputs[\"<name>|__identifier__\"]), but a multiple-input job cannot — decide "
-               "which shape this tool needs and port it by hand.")
+        # ⚠ The two shapes are not equally blocked, and saying so is the point of splitting them.
+        whole_collection = re.search(r"for\s+\$\w+\s+in\s+\$", cmd)
+        if whole_collection:
+            refuse("the command iterates a WHOLE COLLECTION reading `element_identifier` "
+                   f"({whole_collection.group(0)!r}...). That job receives only paths -- identifiers "
+                   "do not reach it by any route. Restructure the tool to run once per element "
+                   "(see brc-masking-row for one way), or port it by hand.")
+        refuse("the command reads `element_identifier` on a single input. ⚠ This IS portable when "
+               "the tool is MAPPED over a collection IN A WORKFLOW, where `$(inputs.<name>.basename)` "
+               "carries the element identifier -- measured on usegalaxy.org.\n"
+               "  It is refused anyway because the same expression means something else through "
+               "/api/tools, where `basename` is the DATASET's name: a tool verified one way would be "
+               "silently wrong the other. Decide which route this tool is for, then port it by "
+               "hand.")
 
     # The one supported conditional: gunzip-or-cat on a possibly-gzipped FASTA.
     #
