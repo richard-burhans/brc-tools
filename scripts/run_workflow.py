@@ -44,7 +44,10 @@ def wait_for_invocation(gi, wf_id, inv_id, timeout=8 * 3600, poll=30):
     while time.time() - start < timeout:
         inv = gi.invocations.show_invocation(inv_id)
         state = inv["state"]
-        if state in ("ok", "scheduled"):
+        # ⛔ `completed` MUST BE HERE. It is the state Galaxy actually settles in -- 22 of 25
+        # invocations on a real account -- and without it a wholly successful run never returns:
+        # the loop falls through to `raise TimeoutError` after the full 8 hours.
+        if state in ("ok", "scheduled", "completed"):
             jobs = gi.invocations.get_invocation_summary(inv_id).get("states", {})
             if jobs.get("running", 0) == 0 and jobs.get("new", 0) == 0 and jobs.get("queued", 0) == 0:
                 return inv

@@ -44,6 +44,15 @@ import sys
 
 from bioblend.galaxy import GalaxyInstance
 
+#: Invocation states meaning Galaxy will create no further jobs.
+#:
+#: ⛔ `completed` IS THE COMMON ONE AND WAS MISSING HERE TOO. This file warned "invocation state is
+#: 'completed', not 'scheduled' -- results below may be from an incomplete run" about a run that had
+#: finished perfectly, which is the same mistake `run_softmask_udt.py` made in a place where it
+#: inverted the verdict rather than just printing a false caution. Measured on this account:
+#: `completed` on 22 of 25 invocations.
+TERMINAL_INVOCATION_STATES = ("completed", "scheduled", "cancelled", "failed")
+
 #: Declared output names in workflows/softmask/softmask_udt.gxwf.yml.
 UPPER_OUT = "uppercased_fasta"
 UNION_OUT = "mask_union"
@@ -91,8 +100,8 @@ def bed_span(t: str) -> int:
 def resolve(gi: GalaxyInstance, invocation_id: str) -> dict[str, str]:
     """Map the three declared output names to collection ids, all from ONE invocation."""
     inv = gi.invocations.show_invocation(invocation_id)
-    if inv.get("state") != "scheduled":
-        print(f"  ⚠ invocation state is {inv.get('state')!r}, not 'scheduled' -- "
+    if inv.get("state") not in TERMINAL_INVOCATION_STATES:
+        print(f"  ⚠ invocation state is {inv.get('state')!r}, which is not terminal -- "
               f"results below may be from an incomplete run.")
     cols = inv.get("output_collections") or {}
     missing = [n for n in (UPPER_OUT, UNION_OUT, MASKED_OUT) if n not in cols]
