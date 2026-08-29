@@ -44,14 +44,27 @@ import sys
 
 from bioblend.galaxy import GalaxyInstance
 
-#: Invocation states meaning Galaxy will create no further jobs.
+#: Invocation states in which Galaxy may still create jobs. Everything else means scheduling is
+#: finished, whatever the jobs are doing.
 #:
-#: ⛔ `completed` IS THE COMMON ONE AND WAS MISSING HERE TOO. This file warned "invocation state is
-#: 'completed', not 'scheduled' -- results below may be from an incomplete run" about a run that had
-#: finished perfectly, which is the same mistake `run_softmask_udt.py` made in a place where it
-#: inverted the verdict rather than just printing a false caution. Measured on this account:
-#: `completed` on 22 of 25 invocations.
-TERMINAL_INVOCATION_STATES = ("completed", "scheduled", "cancelled", "failed")
+#: ⛔ THE VALUES COME FROM GALAXY'S OWN ENUM, not from watching behaviour. lib/galaxy/schema/
+#: invocation.py::InvocationState documents each one, and two of these were missing when this set
+#: was written from observation alone:
+#:     new                       "Brand new workflow invocation"
+#:     ready                     "Workflow ready for another iteration of scheduling."
+#:     requires_materialization  "an otherwise NEW or READY workflow that requires inputs to be
+#:                                materialized (undeferred)"
+#:     cancelling                "invocation scheduler will cancel job in next iteration."
+#:
+#: ⚠ AND THE SAME FILE SETTLES WHY `completed` CANNOT BE USED AS THE WAIT CONDITION. It defines
+#: `scheduled` as "Workflow has been scheduled" and `completed` as "All jobs have reached terminal
+#: states" -- so `completed` is the state one WANTS, and it is nevertheless unreliable: measured
+#: over 60 invocations on this account, 50 `completed` and 9 `scheduled`, interleaved across the
+#: whole timeline, with structurally identical runs landing differently and one sitting `scheduled`
+#: for 6.8 days with all ten jobs `ok` and `update_time` frozen at creation. Galaxy records the
+#: transition in a separate `workflow_invocation_completion` row (model/__init__.py), so an
+#: invocation whose completion hook never fires stays `scheduled` forever. Wait on the JOBS.
+SCHEDULING_IN_PROGRESS = ("new", "ready", "requires_materialization", "cancelling")
 
 #: Declared output names in workflows/softmask/softmask_udt.gxwf.yml.
 UPPER_OUT = "uppercased_fasta"
@@ -158,9 +171,9 @@ def resolve(gi: GalaxyInstance, invocation_id: str) -> dict[str, str]:
     # and certifying a cancelled run's partly-populated collections would be worse than useless.
     if state in ("failed", "cancelled"):
         sys.exit(f"invocation {invocation_id} is in state {state!r}; refusing to verify it.")
-    if state not in TERMINAL_INVOCATION_STATES:
-        print(f"  ⚠ invocation state is {state!r}, which is not terminal -- "
-              f"results below may be from an incomplete run.")
+    if state in SCHEDULING_IN_PROGRESS:
+        print(f"  ⚠ invocation state is {state!r}: Galaxy may still be creating jobs, "
+              f"so the collections below may be incomplete.")
     cols = inv.get("output_collections") or {}
     missing = [n for n in (UPPER_OUT, UNION_OUT, MASKED_OUT) if n not in cols]
     if missing:

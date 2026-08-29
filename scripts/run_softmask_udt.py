@@ -48,14 +48,27 @@ UDTS = ("fasta_uppercase", "dustmasker_bed3", "windowmasker_bed3", "tantan_bed3"
         "lc_classify", "samtools_faidx", "fastan_gdb", "fastan_scan", "fastan_bed",
         "masking_row", "masking_header")
 POLL_SECONDS = 20
-#: Invocation states meaning "Galaxy will create no further jobs for this run".
+#: Invocation states in which Galaxy may still create jobs. Everything else means scheduling is
+#: finished, whatever the jobs are doing.
 #:
-#: ⛔ `completed` WAS MISSING AND THAT INVERTED THE VERDICT. Without it a wholly successful run --
-#: 47/47 jobs ok, every step scheduled -- polled to the full POLL_CEILING and was then reported as
-#: "TIMED OUT ... NOT a pass". The honest-failure fix this file carries was itself failing
-#: dishonestly, in the other direction. Measured against this account's invocation history:
-#: `completed` on 22 of 25, `scheduled` on the rest.
-TERMINAL_INVOCATION_STATES = ("completed", "scheduled", "cancelled", "failed")
+#: ⛔ THE VALUES COME FROM GALAXY'S OWN ENUM, not from watching behaviour. lib/galaxy/schema/
+#: invocation.py::InvocationState documents each one, and two of these were missing when this set
+#: was written from observation alone:
+#:     new                       "Brand new workflow invocation"
+#:     ready                     "Workflow ready for another iteration of scheduling."
+#:     requires_materialization  "an otherwise NEW or READY workflow that requires inputs to be
+#:                                materialized (undeferred)"
+#:     cancelling                "invocation scheduler will cancel job in next iteration."
+#:
+#: ⚠ AND THE SAME FILE SETTLES WHY `completed` CANNOT BE USED AS THE WAIT CONDITION. It defines
+#: `scheduled` as "Workflow has been scheduled" and `completed` as "All jobs have reached terminal
+#: states" -- so `completed` is the state one WANTS, and it is nevertheless unreliable: measured
+#: over 60 invocations on this account, 50 `completed` and 9 `scheduled`, interleaved across the
+#: whole timeline, with structurally identical runs landing differently and one sitting `scheduled`
+#: for 6.8 days with all ten jobs `ok` and `update_time` frozen at creation. Galaxy records the
+#: transition in a separate `workflow_invocation_completion` row (model/__init__.py), so an
+#: invocation whose completion hook never fires stays `scheduled` forever. Wait on the JOBS.
+SCHEDULING_IN_PROGRESS = ("new", "ready", "requires_materialization", "cancelling")
 
 POLL_CEILING = 21600          # 6 h: a 101 Mb chromosome, single-threaded, two-pass windowmasker
 
@@ -192,6 +205,64 @@ def upload_collection(gi: GalaxyInstance, history_id: str, fastas: list[pathlib.
     return hdca["id"]
 
 
+def report_upgrade_messages(gi: GalaxyInstance, wf_id: str, inputs: dict, history_id: str) -> dict | None:
+    """Print the parameters `allow_tool_state_corrections` is about to silence.
+
+    Returns the invocation if the unflagged attempt SUCCEEDED -- there was nothing to silence, and
+    the attempt is therefore already a real run, so use it rather than invoking twice. Otherwise
+    None, having printed what the flagged run below will accept.
+
+    ⛔ THE FLAG DOES NOT CORRECT ANYTHING. Galaxy computes the upgrade messages either way; the flag
+    only decides whether they are raised or logged. lib/galaxy/workflow/modules.py::
+    populate_module_and_state:
+
+        if step.upgrade_messages:
+            if allow_tool_state_corrections:
+                log.debug('Workflow step "%i" had upgrade messages: %s', ...)
+            else:
+                raise exceptions.MessageException("Workflow step has upgrade messages", ...)
+
+    `log.debug` goes to Galaxy's server log, not into any response we can read -- so passing the flag
+    and walking away means a parameter could start defaulting differently and nothing here would ever
+    say so. That is the silent-success shape this project keeps getting bitten by.
+
+    The refusal carries the list in `err_data`, and is raised inside build_workflow_run_configs
+    BEFORE any invocation row or job exists, so an unflagged attempt is a free read of what the flag
+    would hide.
+
+    ⚠ IT IS A FLOOR, NOT A CENSUS. The loop above raises on the FIRST step carrying messages, so one
+    attempt reports one step. That is why fixing these by hand went sort_bed, then genomecov, then
+    merge_bed -- three runs, three refusals, each revealing only the next one.
+
+    ⚠ AND `exc.body` IS A JSON STRING, NOT A DICT. Reading it with .get() silently yields nothing and
+    the preflight then reports "clean" for a workflow with messages -- measured, not assumed.
+    """
+    try:
+        inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history_id)
+    except Exception as exc:  # noqa: BLE001 - any refusal shape is worth reading
+        body = getattr(exc, "body", None)
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except ValueError:
+                body = None
+        data = body.get("err_data") if isinstance(body, dict) else None
+        if not data:
+            print(f"  upgrade-message preflight: nothing readable ({str(exc)[:140]})")
+            return None
+        n = sum(len(v) for v in data.values())
+        print(f"  upgrade-message preflight: {n} default(s) the run below will accept, "
+              f"on the first offending step only")
+        for order_index in sorted(data, key=int):
+            for param, message in sorted(data[order_index].items()):
+                print(f"    step {order_index}: {param}: {message}")
+        return None
+    # ⚠ A SUCCEEDING PREFLIGHT HAS ALREADY INVOKED. The refusal path costs nothing because Galaxy
+    # raises before writing an invocation row; the success path scheduled a real run. Hand it back.
+    print("  upgrade-message preflight: none -- the flag is inert for this workflow")
+    return inv
+
+
 def await_invocation(gi: GalaxyInstance, invocation_id: str) -> int:
     """Wait for every job to reach a terminal state, then report EVERY step. 0 iff all jobs are ok.
 
@@ -215,7 +286,7 @@ def await_invocation(gi: GalaxyInstance, invocation_id: str) -> int:
         detail = gi.invocations.show_invocation(invocation_id)
         states = gi.invocations.get_invocation_summary(invocation_id).get("states", {})
         pending = {k: v for k, v in states.items() if k in ("new", "queued", "running", "paused")}
-        scheduling_done = detail.get("state") in TERMINAL_INVOCATION_STATES
+        scheduling_done = detail.get("state") not in SCHEDULING_IN_PROGRESS
         if scheduling_done and states and not pending:
             timed_out = False
             break
@@ -281,8 +352,10 @@ def main() -> int:
     # file, decide any parameter the workflow does not name. Parameters that MATTER to the analysis
     # are still set explicitly in the workflow (report_select, max, soft) precisely so that an
     # upstream default change cannot move them silently.
-    inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history["id"],
-                                       allow_tool_state_corrections=True)
+    inv = report_upgrade_messages(gi, wf_id, inputs, history["id"])
+    if inv is None:
+        inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history["id"],
+                                           allow_tool_state_corrections=True)
     base = gi.base_url
     print(f"  INVOKED {inv['id']} -> {base}/workflows/invocations/{inv['id']}")
     return await_invocation(gi, inv["id"])

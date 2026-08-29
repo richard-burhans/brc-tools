@@ -29,14 +29,27 @@ from bioblend.galaxy import GalaxyInstance
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / "workflows/softmask/softmask_udt.gxwf.yml"
 UDT_DIR = ROOT / "udt"
-#: Invocation states meaning "Galaxy will create no further jobs for this run".
+#: Invocation states in which Galaxy may still create jobs. Everything else means scheduling is
+#: finished, whatever the jobs are doing.
 #:
-#: ⛔ `completed` WAS MISSING AND THAT INVERTED THE VERDICT. Without it a wholly successful run --
-#: 47/47 jobs ok, every step scheduled -- polled to the full POLL_CEILING and was then reported as
-#: "TIMED OUT ... NOT a pass". The honest-failure fix this file carries was itself failing
-#: dishonestly, in the other direction. Measured against this account's invocation history:
-#: `completed` on 22 of 25, `scheduled` on the rest.
-TERMINAL_INVOCATION_STATES = ("completed", "scheduled", "cancelled", "failed")
+#: ⛔ THE VALUES COME FROM GALAXY'S OWN ENUM, not from watching behaviour. lib/galaxy/schema/
+#: invocation.py::InvocationState documents each one, and two of these were missing when this set
+#: was written from observation alone:
+#:     new                       "Brand new workflow invocation"
+#:     ready                     "Workflow ready for another iteration of scheduling."
+#:     requires_materialization  "an otherwise NEW or READY workflow that requires inputs to be
+#:                                materialized (undeferred)"
+#:     cancelling                "invocation scheduler will cancel job in next iteration."
+#:
+#: ⚠ AND THE SAME FILE SETTLES WHY `completed` CANNOT BE USED AS THE WAIT CONDITION. It defines
+#: `scheduled` as "Workflow has been scheduled" and `completed` as "All jobs have reached terminal
+#: states" -- so `completed` is the state one WANTS, and it is nevertheless unreliable: measured
+#: over 60 invocations on this account, 50 `completed` and 9 `scheduled`, interleaved across the
+#: whole timeline, with structurally identical runs landing differently and one sitting `scheduled`
+#: for 6.8 days with all ten jobs `ok` and `update_time` frozen at creation. Galaxy records the
+#: transition in a separate `workflow_invocation_completion` row (model/__init__.py), so an
+#: invocation whose completion hook never fires stays `scheduled` forever. Wait on the JOBS.
+SCHEDULING_IN_PROGRESS = ("new", "ready", "requires_materialization", "cancelling")
 
 TIER_CEILING = 7200          # 2 h per tier; a real chromosome is slow and single-threaded
 UDTS = ("fasta_uppercase", "dustmasker_bed3", "windowmasker_bed3", "tantan_bed3",
@@ -159,7 +172,7 @@ def run_tier(gi: GalaxyInstance, wf_id: str, hdca: str, history: str) -> tuple[b
         detail = gi.invocations.show_invocation(inv["id"])
         states = gi.invocations.get_invocation_summary(inv["id"]).get("states", {})
         pending = {k: v for k, v in states.items() if k in ("new", "queued", "running", "paused")}
-        if detail.get("state") in TERMINAL_INVOCATION_STATES and states and not pending:
+        if detail.get("state") not in SCHEDULING_IN_PROGRESS and states and not pending:
             timed_out = False
             break
         time.sleep(15)
