@@ -259,6 +259,15 @@ steps:
     doc: Merge overlapping intervals across all four maskers.
     in:
       input: sort_bed/output
+    # Every value below is the tool's OWN default, restated so the step is fully specified. It
+    # changes nothing about the merge; it is what lets the workflow be invoked through the API
+    # WITHOUT allow_tool_state_corrections, which does not correct anything -- it only downgrades
+    # Galaxy's refusal to a log.debug on the server that no response exposes.
+    state:
+      strand: ''                    # merge regardless of strand; these are unstranded mask tracks
+      distance: 0                   # only merge features that actually overlap or book-end
+      header: false
+      c_and_o_argument_repeat: []   # no column operations; we want plain merged intervals
 
   # ---- apply the mask ---------------------------------------------------------------------
   maskfasta:
@@ -283,6 +292,15 @@ steps:
       input: merge_bed/output
     state:
       soft: true
+      # ⚠ BOTH BELOW ARE THE TOOL'S DEFAULTS, AND ONE OF THEM MATTERS.
+      # `mc` is the hard-masking replacement character, inert under -soft, which lower-cases
+      # instead; restated only so the step is fully specified.
+      # `fullheader: false` is NOT inert. It makes bedtools truncate each header at the first
+      # whitespace token, which is exactly what the BED tracks carry -- so the masked FASTA and
+      # its own intervals agree by construction. Setting it true would silently break that
+      # correspondence, and verify_softmask_outputs compares the two.
+      mc: 'N'
+      fullheader: false
   faidx:
     tool_id: brc-samtools-faidx
     label: faidx
@@ -490,3 +508,21 @@ steps:
             section_name: "Soft-masking proportions"
             title: "Per-strain % genome masked"
             description: "Percent of each genome soft-masked by dustmasker, windowmasker, tantan, fastan, and their union (bedtools genomecov)."
+            # A table has no axes; these are the linegraph fields, and MultiQC ignores them here.
+            # They are named anyway because Galaxy counts an unset OPTIONAL parameter as an upgrade
+            # message exactly like a required one.
+            xlab: null
+            ylab: null
+      # The tool's own defaults, restated for the same reason as merge_bed above. The report's
+      # title and comment live in the custom-content section, not in these top-level fields.
+      # ⚠ A DATA PARAMETER, AND IT STILL HAS TO BE NAMED. `image_content_input` is an optional
+      # data input used only by the `image` plot type. Leaving it unconnected is not the same as
+      # leaving it unset: Galaxy raises an upgrade message for it either way, and an explicit null
+      # is what settles it. This was the last of the three that kept the workflow needing
+      # allow_tool_state_corrections, and the one an audit of non-data parameters cannot see.
+      image_content_input: null
+      title: ''
+      comment: ''
+      flat: false
+      export: false
+      png_plots: false
