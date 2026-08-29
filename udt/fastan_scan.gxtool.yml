@@ -45,9 +45,11 @@ help:
 
     * `$GALAXY_SLOTS` HAS NO FALLBACK HERE. Written bare it is correct on usegalaxy.org (measured:
       the variable is exported, value 1) and collapses to a lone `-T` anywhere it is unset -- at
-      which point FasTAN either errors or swallows `-oscan` as its thread count. The classic
-      wrapper writes `${GALAXY_SLOTS:-4}` precisely to avoid that, and the brace form is fatal in a
-      UDT, so there is no direct translation.
+      which point FasTAN either errors or swallows `-oscan` as its thread count.
+      ⚠ An earlier note claimed the classic `${GALAXY_SLOTS:-4}` had "no direct translation"
+      because the brace form was fatal in a UDT. THAT WAS WRONG: a backslash-escaped ${GALAXY_SLOTS:-4} escapes
+      through to the shell verbatim and yields 1. So a faithful translation does exist -- the pin
+      below rests on the two reasons that follow, not on that one.
     * SIBLING TOOLS IN THIS PACKAGE ABORT ABOVE ONE THREAD. FASTAN v0.8's `FastTIR` and `FastLTR`
       die with `free(): double free detected in tcache 2` at any `-T` over 1, including their own
       default of 8. `FasTAN` itself is UNAFFECTED -- measured clean at -T1, -T2 and -T4 -- so this

@@ -56,7 +56,7 @@ for `cores_min: 4`, `cores_min: 2`, `ram_min: 8192` and even `cores_min: 1`. It 
 being clipped, it is the requirement being refused. `export GALAXY_SLOTS=8` inside the command does
 change the number the tool reads, and changes nothing else: `nproc` stays 1, so the tool would
 oversubscribe a single core. Threading flags in a converted wrapper are therefore cosmetic on the
-public server, and `hoist_brace_defaults()` preserves each wrapper's declared default only so that
+public server, and a wrapper's own `${VAR:-default}` is escaped through verbatim so that
 the SAME yaml stays correct on a Galaxy that does allocate cores (this repo's own
 `galaxy_config_job_conf.xml` hands every tool 16 slots and 60 GB).
 
@@ -129,54 +129,37 @@ SHELL_ENV_OK = frozenset({
     "_GALAXY_JOB_TMP_DIR", "_GALAXY_JOB_HOME_DIR",
 })
 
-#: ⛔ `${VAR}` IS FATAL, AND `$VAR` IS FINE. Galaxy claims the brace form for its own templating, so
-#: a `shell_command` containing `${GALAXY_SLOTS}` -- or `${GALAXY_SLOTS:-4}`, which is what
-#: tools/fastan writes -- fails with "Error occurred while building command line for tool", with
-#: BOTH job streams empty and no indication of which variable caused it. Measured 2026-08-28: the
-#: identical probe with braces failed and without braces returned `1`.
-BRACE_EXPANSION = re.compile(r"\$\{[^}]*\}")
+#: `${...}` in a `shell_command`.
+#:
+#: ⛔ AN EARLIER VERSION OF THIS FILE SAID THE BRACE FORM WAS FATAL. IT IS NOT, AND THE MISTAKE WAS
+#: EXPENSIVE -- it drove a refusal rule and a whole rewrite pass that were not needed. `${...}` is
+#: Galaxy's own ECMAScript FUNCTION-BODY expression form, the sibling of `$(...)`:
+#: `${ return 'HELLO'; }` evaluates to HELLO. `${HOME}` fails only because `HOME` is not a valid JS
+#: function body -- a parse error, surfacing as "Error occurred while building command line for
+#: tool" with both job streams empty, which is what made it look like a ban.
+#:
+#: ⚠ A SHELL BRACE EXPANSION NEEDS ESCAPING, NOT REFUSING. Measured on usegalaxy.org:
+#:     \${GALAXY_SLOTS:-4}  ->  1          \${HOME}  ->  /home/g2main
+#: so the wrapper's own `:-default` survives verbatim and needs no reconstruction.
+BRACE_EXPANSION = re.compile(r"(?<!\\)\$\{")
 
-#: `${VAR:-default}`. The brace form is fatal, but the default it carries is the wrapper's own
-#: per-tool intent -- `fastan` asks for 4 threads, `iqtree3` for 2, the pangenome tools for 1 -- and
-#: dropping it during the rewrite would silently change what the tool does when GALAXY_SLOTS is
-#: absent. `hoist_brace_defaults()` preserves it in brace-free shell instead.
-BRACE_DEFAULT = re.compile(r"\$\{(\w+):-([^}]*)\}")
+#: A `${ ... }` whose body reads as JavaScript rather than a shell variable. Escaping one of these
+#: would break a legitimate Galaxy expression, so the converter refuses rather than guessing.
+JS_FUNCTION_BODY = re.compile(r"\$\{[^}]*\breturn\b[^}]*\}")
 
 
-def hoist_brace_defaults(cmd: str) -> tuple[str, str, set[str]]:
-    """Rewrite `${VAR:-N}` to a brace-free equivalent that keeps N.
+def escape_shell_braces(cmd: str) -> str:
+    """Escape every unescaped `${` so Galaxy hands it to the shell instead of parsing it as JS."""
+    out, i = [], 0
+    while i < len(cmd):
+        if cmd.startswith("${", i) and (i == 0 or cmd[i - 1] != "\\"):
+            out.append("\\${")
+            i += 2
+        else:
+            out.append(cmd[i])
+            i += 1
+    return "".join(out)
 
-    Returns (cmd, preamble, aliases) -- `aliases` are the shell variables the preamble DEFINES, and
-    they must be handed to `assert_fully_translated` or it will refuse our own emission.
-
-    ⚠ THIS BUYS NO CPU, AND MUST NOT BE READ AS IF IT DID. Measured on usegalaxy.org 2026-08-28: a
-    UDT job gets `GALAXY_SLOTS=1`, `nproc` 1 and `sched_getaffinity` 1, and every `resource`
-    requirement -- even `cores_min: 1` -- is refused outright with "No destinations are available to
-    fulfill request: user_defined-.*". Exporting a larger GALAXY_SLOTS inside the command changes
-    the number the tool reads and nothing else, so a tool told it has 4 threads would oversubscribe
-    one core. What this function preserves is the wrapper's DECLARED default for environments that
-    do not set the variable at all; on usegalaxy.org the Galaxy-set 1 wins, which is correct.
-    """
-    found: dict[str, str] = {}
-    for var, dflt in BRACE_DEFAULT.findall(cmd):
-        if var not in SHELL_ENV_OK:
-            continue
-        if not re.fullmatch(r"\w+", dflt):
-            refuse(f"`${{{var}:-{dflt}}}` has a default this converter will not rewrite into shell "
-                   f"unquoted. Simplify it in the XML, or port this tool by hand.")
-        if found.get(var, dflt) != dflt:
-            refuse(f"`${var}` is written with two different defaults in one command "
-                   f"({found[var]!r} and {dflt!r}). Which one is intended is a judgement, not a "
-                   f"rewrite; make them agree in the XML.")
-        found[var] = dflt
-    preamble, aliases = [], set()
-    for var, dflt in sorted(found.items()):
-        alias = f"BRC_{var}"
-        aliases.add(alias)
-        # No braces anywhere in what we emit -- that is the whole point.
-        preamble.append(f'{alias}="${var}"; [ -n "${alias}" ] || {alias}={dflt}')
-        cmd = cmd.replace(f"${{{var}:-{dflt}}}", f"${alias}")
-    return cmd, ("\n".join(preamble) + "\n" if preamble else ""), aliases
 
 
 def refuse(msg: str) -> None:
@@ -190,6 +173,7 @@ def refuse(msg: str) -> None:
 #: `python3: command not found`, on 2026-08-28. Every masking wrapper in this repo pipes its tool
 #: through a small Python helper, so every one of them hits this.
 RUNTIMES = ("python3", "python", "perl", "Rscript")
+
 
 
 def check_single_runtime(cmd: str, container: str) -> None:
@@ -360,7 +344,7 @@ def assert_fully_translated(cmd: str, extra_ok: set[str] | None = None) -> None:
                f"shell. This module already refuses `$(` inside an inlined script for the same "
                f"reason. Rewrite it with backticks, which pass through untouched, or port by hand.")
     brace = BRACE_EXPANSION.search(residue)
-    if brace:
+    if brace:  # escape_shell_braces() ran first, so an unescaped ${ here is this converter's bug
         inner = brace.group(0)[2:-1]
         bare = inner.split(":")[0].split("-")[0] or "VAR"
         refuse(f"`{brace.group(0)}` uses shell brace expansion, which Galaxy claims for its own "
@@ -423,8 +407,15 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
     # only interpolates `$(...)`, so a bare `$` needs no protection here.
     cmd = cmd.replace("\\$", "$")
 
-    # Keep each wrapper's declared `:-N` before the brace check below rejects the syntax carrying it.
-    cmd, slots_preamble, slot_aliases = hoist_brace_defaults(cmd)
+    # ⚠ ESCAPE shell brace expansions; do not refuse them and do not rebuild their defaults. A
+    # wrapper's `${GALAXY_SLOTS:-4}` is shell, and `\${...}` reaches the shell intact, default and
+    # all. Refuse only what looks like a real Galaxy expression, since escaping that would break it.
+    js = JS_FUNCTION_BODY.search(cmd)
+    if js:
+        refuse(f"the command contains what reads as a Galaxy expression, {js.group(0)[:60]!r}. "
+               f"This converter escapes `${{...}}` as shell and will not guess which of the two was "
+               f"meant. Port this tool by hand.")
+    cmd = escape_shell_braces(cmd)
 
     scripts: list[tuple[str, str]] = []
     for name in sorted(set(re.findall(r"\$__tool_directory__/([\w.\-]+)", cmd))):
@@ -439,8 +430,8 @@ def convert_command(cmd: str, tool_dir: pathlib.Path, params: dict[str, ET.Eleme
             f"$__tool_directory__/{name}", name)
 
     cmd = substitute(cmd, params, outputs)
-    assert_fully_translated(cmd, slot_aliases)
-    return slots_preamble + cmd.strip(), scripts
+    assert_fully_translated(cmd)
+    return cmd.strip(), scripts
 
 
 def main() -> int:
