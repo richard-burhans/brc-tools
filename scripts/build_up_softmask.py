@@ -24,7 +24,7 @@ import time
 
 import yaml
 from bioblend.galaxy import GalaxyInstance
-from softmask_lib import SCHEDULING_IN_PROGRESS, WORKFLOW, await_dataset, connect, register_all
+from softmask_lib import SCHEDULING_IN_PROGRESS, WORKFLOW, await_dataset, connect, invoke, register_all
 
 TIER_CEILING = 7200          # 2 h per tier; a real chromosome is slow and single-threaded
 
@@ -97,8 +97,7 @@ def run_tier(gi: GalaxyInstance, wf_id: str, hdca: str, history: str) -> tuple[b
     handles = gi.workflows.show_workflow(wf_id)["inputs"]
     inputs = {sid: {"src": "hdca", "id": hdca} for sid in handles}
     try:
-        inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history,
-                                           allow_tool_state_corrections=True)
+        inv = invoke(gi, wf_id, inputs, history)
     except Exception as e:  # noqa: BLE001 - a tier reports whatever refused it, not one class
         return False, f"INVOKE REFUSED: {str(e)[:260]}"
 

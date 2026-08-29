@@ -38,7 +38,7 @@ import time
 
 import yaml
 from bioblend.galaxy import GalaxyInstance
-from softmask_lib import ROOT, SCHEDULING_IN_PROGRESS, WORKFLOW, await_dataset, connect, register_all
+from softmask_lib import ROOT, SCHEDULING_IN_PROGRESS, WORKFLOW, await_dataset, connect, invoke, register_all
 
 #: Only the tools this workflow uses. `env_probe` lives in udt/ too and is a diagnostic.
 POLL_SECONDS = 20
@@ -132,64 +132,6 @@ def upload_collection(gi: GalaxyInstance, history_id: str, fastas: list[pathlib.
     return hdca["id"]
 
 
-def report_upgrade_messages(gi: GalaxyInstance, wf_id: str, inputs: dict, history_id: str) -> dict | None:
-    """Print the parameters `allow_tool_state_corrections` is about to silence.
-
-    Returns the invocation if the unflagged attempt SUCCEEDED -- there was nothing to silence, and
-    the attempt is therefore already a real run, so use it rather than invoking twice. Otherwise
-    None, having printed what the flagged run below will accept.
-
-    ⛔ THE FLAG DOES NOT CORRECT ANYTHING. Galaxy computes the upgrade messages either way; the flag
-    only decides whether they are raised or logged. lib/galaxy/workflow/modules.py::
-    populate_module_and_state:
-
-        if step.upgrade_messages:
-            if allow_tool_state_corrections:
-                log.debug('Workflow step "%i" had upgrade messages: %s', ...)
-            else:
-                raise exceptions.MessageException("Workflow step has upgrade messages", ...)
-
-    `log.debug` goes to Galaxy's server log, not into any response we can read -- so passing the flag
-    and walking away means a parameter could start defaulting differently and nothing here would ever
-    say so. That is the silent-success shape this project keeps getting bitten by.
-
-    The refusal carries the list in `err_data`, and is raised inside build_workflow_run_configs
-    BEFORE any invocation row or job exists, so an unflagged attempt is a free read of what the flag
-    would hide.
-
-    ⚠ IT IS A FLOOR, NOT A CENSUS. The loop above raises on the FIRST step carrying messages, so one
-    attempt reports one step. That is why fixing these by hand went sort_bed, then genomecov, then
-    merge_bed -- three runs, three refusals, each revealing only the next one.
-
-    ⚠ AND `exc.body` IS A JSON STRING, NOT A DICT. Reading it with .get() silently yields nothing and
-    the preflight then reports "clean" for a workflow with messages -- measured, not assumed.
-    """
-    try:
-        inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history_id)
-    except Exception as exc:  # noqa: BLE001 - any refusal shape is worth reading
-        body = getattr(exc, "body", None)
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except ValueError:
-                body = None
-        data = body.get("err_data") if isinstance(body, dict) else None
-        if not data:
-            print(f"  upgrade-message preflight: nothing readable ({str(exc)[:140]})")
-            return None
-        n = sum(len(v) for v in data.values())
-        print(f"  upgrade-message preflight: {n} default(s) the run below will accept, "
-              f"on the first offending step only")
-        for order_index in sorted(data, key=int):
-            for param, message in sorted(data[order_index].items()):
-                print(f"    step {order_index}: {param}: {message}")
-        return None
-    # ⚠ A SUCCEEDING PREFLIGHT HAS ALREADY INVOKED. The refusal path costs nothing because Galaxy
-    # raises before writing an invocation row; the success path scheduled a real run. Hand it back.
-    print("  upgrade-message preflight: none -- the flag is inert for this workflow")
-    return inv
-
-
 def await_invocation(gi: GalaxyInstance, invocation_id: str) -> int:
     """Wait for every job to reach a terminal state, then report EVERY step. 0 iff all jobs are ok.
 
@@ -266,23 +208,11 @@ def main() -> int:
 
     handles = gi.workflows.show_workflow(wf_id)["inputs"]
     inputs = {sid: {"src": "hdca", "id": hdca} for sid in handles}
-    # ⚠ allow_tool_state_corrections IS REQUIRED, and the reason is not obvious.
-    # Galaxy treats every parameter a `state:` block leaves unset as an "upgrade message" and
-    # REFUSES the whole invocation over it -- while the import succeeds silently, so the workflow
-    # looks correct in the editor and cannot run. gxformat2 `state:` blocks are conventionally
-    # partial (the committed softmask.gxwf.yml sets three keys on a tool with a dozen), so without
-    # this flag a portable workflow is unrunnable unless every default is transcribed by hand. That
-    # was three consecutive refusals here -- sort_bed, then genomecov, then merge_bed -- each
-    # naming a different set of untouched booleans.
-    #
-    # ⛔ IT IS NOT A BLANKET "IGNORE PROBLEMS" SWITCH, but it does mean tool defaults, not this
-    # file, decide any parameter the workflow does not name. Parameters that MATTER to the analysis
-    # are still set explicitly in the workflow (report_select, max, soft) precisely so that an
-    # upstream default change cannot move them silently.
-    inv = report_upgrade_messages(gi, wf_id, inputs, history["id"])
-    if inv is None:
-        inv = gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history["id"],
-                                           allow_tool_state_corrections=True)
+    # ⛔ NO allow_tool_state_corrections. Every parameter every step can take is named in the
+    # workflow, so there is nothing for it to silence -- and it never fixed anything anyway: it only
+    # swaps Galaxy's refusal for a log.debug on the server that no response exposes. A refusal here
+    # is real news. See softmask_lib.invoke.
+    inv = invoke(gi, wf_id, inputs, history["id"])
     base = gi.base_url
     print(f"  INVOKED {inv['id']} -> {base}/workflows/invocations/{inv['id']}")
     return await_invocation(gi, inv["id"])

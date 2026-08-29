@@ -18,6 +18,7 @@ assertions differ for real reasons and stay where they are.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
@@ -125,3 +126,45 @@ def fasta_stats(text: str) -> tuple[int, int, int]:
         res += len(line)
         low += sum(1 for c in line if "a" <= c <= "z")
     return seqs, res, low
+
+
+class UpgradeMessagesRefused(RuntimeError):
+    """Galaxy refused an invocation because some step's `state:` leaves a parameter unset."""
+
+    def __init__(self, data: dict) -> None:
+        self.data = data
+        lines = [f"step {i}: {k}: {v}"
+                 for i in sorted(data, key=int) for k, v in sorted(data[i].items())]
+        super().__init__("Galaxy refused the invocation over unset parameters:\n  "
+                         + "\n  ".join(lines))
+
+
+def invoke(gi: GalaxyInstance, wf_id: str, inputs: dict, history_id: str) -> dict:
+    """Invoke a workflow WITHOUT allow_tool_state_corrections, reporting what it would have hidden.
+
+    ⛔ THE FLAG WAS NEVER A FIX. `workflow/modules.py::populate_module_and_state` either raises on a
+    step's upgrade messages or, with the flag, calls `log.debug` -- to Galaxy's server log, which no
+    response exposes. Passing it does not settle which value a parameter takes; it only removes the
+    one place that would have told us the question was open. Every parameter this workflow's steps
+    can take is now named in softmask_udt.gxwf.yml, so there is nothing to silence, and a refusal
+    here is real news rather than noise to be switched off.
+
+    ⚠ THE REFUSAL IS THE ONLY RELIABLE AUDIT. Comparing a step's `state:` against the tool's
+    parameter list misses two shapes, both of which really occurred here: a parameter nested inside
+    a repeat's conditional, and an OPTIONAL `data` input, which Galaxy counts as unset exactly like
+    a required one -- leaving it unconnected is not the same as naming it null. Galaxy also raises
+    on the FIRST offending step only, so one refusal is a floor, not a census.
+    """
+    try:
+        return gi.workflows.invoke_workflow(wf_id, inputs=inputs, history_id=history_id)
+    except Exception as exc:
+        body = getattr(exc, "body", None)
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except ValueError:
+                body = None
+        data = body.get("err_data") if isinstance(body, dict) else None
+        if data:
+            raise UpgradeMessagesRefused(data) from exc
+        raise
