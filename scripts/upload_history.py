@@ -20,7 +20,6 @@ from pathlib import Path
 
 from bioblend.galaxy import GalaxyInstance
 
-
 REPO = Path(__file__).resolve().parents[1]
 RAW = REPO / "data" / "raw"
 OUT = REPO / "execution" / "history.json"

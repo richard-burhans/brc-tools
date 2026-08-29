@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import json
 import shutil
 import subprocess
 import sys
@@ -31,7 +30,7 @@ ODGI_IMG = "quay.io/biocontainers/odgi:0.9.4--h077b44d_0"
 
 
 def open_gfa(path: Path):
-    return gzip.open(path, "rt") if path.suffix == ".gz" else open(path)
+    return gzip.open(path, "rt") if path.suffix == ".gz" else path.open()
 
 
 def gfa_line_counts(path: Path) -> dict:
@@ -63,7 +62,7 @@ def gfa_to_og_via_docker(gfa: Path, work: Path) -> Path:
     """Build .og from a (gzipped) GFA via odgi biocontainer."""
     gfa_local = work / "graph.gfa"
     if gfa.suffix == ".gz":
-        with gzip.open(gfa, "rb") as src, open(gfa_local, "wb") as dst:
+        with gzip.open(gfa, "rb") as src, gfa_local.open("wb") as dst:
             shutil.copyfileobj(src, dst)
     else:
         shutil.copy(gfa, gfa_local)
@@ -87,7 +86,10 @@ def odgi_stats(og: Path) -> dict:
     ], text=True)
     lines = out.strip().splitlines()
     header, vals = lines[0], lines[1]
-    return dict(zip(header.split("\t"), vals.split("\t")))
+    # ⛔ strict=True, deliberately. This parses `odgi stats -S`, and a header row and a value row
+    # of differing width is a malformed stat block, not something to silently truncate to the
+    # shorter of the two -- which would yield a partial, plausible-looking stats dict.
+    return dict(zip(header.split("\t"), vals.split("\t"), strict=True))
 
 
 def main() -> int:
@@ -115,10 +117,7 @@ def main() -> int:
     for tag in sorted(set(g_counts) | set(v_counts)):
         gc = g_counts.get(tag, 0)
         vc = v_counts.get(tag, 0)
-        if vc:
-            pct = 100 * (gc - vc) / vc
-        else:
-            pct = float("inf") if gc else 0
+        pct = 100 * (gc - vc) / vc if vc else (float("inf") if gc else 0)
         ok = abs(pct) < 0.5
         lines.append(f"| {tag} | {gc} | {vc} | {pct:+.3f} |")
         if tag in ("S", "L", "P") and not ok:
@@ -134,8 +133,10 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as td:
         tdir = Path(td)
-        g_work = tdir / "galaxy"; g_work.mkdir()
-        v_work = tdir / "v2"; v_work.mkdir()
+        g_work = tdir / "galaxy"
+        g_work.mkdir()
+        v_work = tdir / "v2"
+        v_work.mkdir()
         try:
             g_og = gfa_to_og_via_docker(galaxy_gfa, g_work)
             v_og = gfa_to_og_via_docker(v2_gfa, v_work)
@@ -147,7 +148,8 @@ def main() -> int:
             stats_ok = True
             for k in gs:
                 try:
-                    gv = float(gs[k]); vv = float(vs[k])
+                    gv = float(gs[k])
+                    vv = float(vs[k])
                     pct = 100 * (gv - vv) / vv if vv else 0
                     if abs(pct) >= 0.5:
                         stats_ok = False
