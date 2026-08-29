@@ -36,7 +36,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import pathlib
+import re
 import sys
+import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UDT = ROOT / "udt"
@@ -122,24 +124,82 @@ help:
 """
 
 
-#: Command fragments this file hardcodes, and the wrapper each is copied from. If an XML changes,
-#: the generated UDT silently keeps running the old command -- so assert the fragment is still there.
+#: The masker columns, in the one order both the header and masking_table.py must use.
+MASKER_COLUMNS = ("dustmasker", "windowmasker", "tantan", "fastan", "union")
+
+#: UDTs that live in udt/ but are deliberately NOT generated, with the reason.
+#: ⚠ Anything here is exempt from the staleness check, so the list should stay short.
+HAND_WRITTEN_UDTS = frozenset({
+    # A diagnostic, not part of the workflow: it dumps the job container's environment so the
+    # platform claims in these tools' help text rest on a measurement. Nothing generates it because
+    # nothing in tools/ corresponds to it.
+    "env_probe.gxtool.yml",
+})
+
+#: Command fragments this file hardcodes, and the wrapper each is copied from.
+#:
+#: ⛔ THESE ARE MATCHED AGAINST THE <command> ELEMENT ONLY, NOT THE WHOLE FILE. An earlier version
+#: searched the raw XML text, and prose satisfied the anchors: `tantan ` matches
+#: `<description>tantan gentle low-complexity...`, `FasTAN` and `ANOtoBED` appear in fastan.xml's
+#: comment and help. An adversarial pass gutted tantan's entire <command>, left `lc2bed.awk` in a
+#: `## FIXME` comment, and the tripwire passed.
 XML_ANCHORS = {
-    "tools/dustmasker/dustmasker.xml": ["dustmasker -in", "-outfmt interval", "interval2bed.awk"],
+    "tools/dustmasker/dustmasker.xml": ["dustmasker -in", "-outfmt interval", "interval2bed.awk",
+                                        "lc_classify.py", "toupper"],
     "tools/windowmasker/windowmasker.xml": ["windowmasker -mk_counts", "windowmasker -ustat",
-                                            "-outfmt interval", "interval2bed.awk"],
-    "tools/tantan/tantan.xml": ["tantan ", "lc2bed.awk"],
-    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ANOtoBED", "ano2bed6.awk"],
+                                            "-outfmt interval", "interval2bed.awk",
+                                            "lc_classify.py", "toupper"],
+    "tools/tantan/tantan.xml": ["tantan in.fa", "lc2bed.awk", "lc_classify.py", "toupper"],
+    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ANOtoBED", "ano2bed6.awk", "toupper"],
     "tools/masking_table/masking_table.xml": ["masking_table.py", "--dustmasker", "--union"],
+}
+
+#: ⛔ VERSIONS ARE ANCHORED SEPARATELY, BECAUSE THEY ARE THE DRIFT THAT ACTUALLY HAPPENS. No command
+#: fragment contains a version, so a `<requirement>` bump sails past the anchors above while the
+#: container pinned in build() stays put -- and the two then run different software. This repo's own
+#: recent history is requirement edits to these very files.
+XML_REQUIREMENTS = {
+    "tools/dustmasker/dustmasker.xml": {"blast": "2.17.0"},
+    "tools/windowmasker/windowmasker.xml": {"blast": "2.17.0"},
+    "tools/tantan/tantan.xml": {"tantan": "51"},
+    "tools/fastan/fastan.xml": {"fastan": "0.8"},
+    "tools/masking_table/masking_table.xml": {"python": "3.12"},
 }
 
 #: Helper files duplicated across wrapper directories. They are byte-identical today; a fix applied
 #: to one copy would otherwise never reach the UDT, which reads only the first.
+#: ⚠ Hand-written, so it is "every duplicate someone remembered". `assert_no_new_duplicates()`
+#: closes that by searching for duplicate content rather than trusting this list.
 DUPLICATED_HELPERS = (
     ("tools/dustmasker/lc_classify.py", "tools/tantan/lc_classify.py",
      "tools/windowmasker/lc_classify.py"),
     ("tools/dustmasker/interval2bed.awk", "tools/windowmasker/interval2bed.awk"),
 )
+
+#: Content-duplicate files that are NOT inlined helpers, so divergence between them is harmless.
+DUPLICATE_ALLOWLIST = {("tools/sourmash_compare/macros.xml", "tools/sourmash_sketch/macros.xml")}
+
+
+def command_text(xml_path: pathlib.Path) -> str:
+    """The <command> element's EXECUTABLE text: comments and Cheetah directives stripped.
+
+    ⛔ COMMENTS INSIDE <command> COUNT AS PROSE, TOO. Scoping the anchors to <command> stopped
+    `<description>tantan gentle...` from satisfying the `tantan ` anchor, but an adversarial pass
+    then gutted the command body and left the anchor strings in a `## FIXME` comment -- and the
+    tripwire passed again. `##` is Cheetah's comment marker, so anything after it never reaches a
+    shell and must not be able to satisfy an anchor.
+    """
+    root = ET.parse(xml_path).getroot()
+    el = root.find("command")
+    if el is None or not el.text:
+        sys.exit(f"REFUSING: {xml_path} has no <command> element to anchor against.")
+    lines = []
+    for raw in el.text.splitlines():
+        line = raw.split("##", 1)[0]
+        if line.strip().startswith("#"):       # a Cheetah directive, not a command
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def assert_sources_aligned() -> None:
@@ -148,13 +208,23 @@ def assert_sources_aligned() -> None:
         path = ROOT / xml
         if not path.is_file():
             sys.exit(f"REFUSING: {xml} is missing; this generator mirrors it.")
-        body = path.read_text(encoding="utf-8")
+        cmd = command_text(path)
         for a in anchors:
-            if a not in body:
-                sys.exit(f"REFUSING: {xml} no longer contains {a!r}, which this generator "
-                         f"hardcodes.\n  The wrapper changed and the generated UDT would silently "
-                         f"keep running the old command. Reconcile build() with the XML, then "
-                         f"regenerate.")
+            if a not in cmd:
+                sys.exit(f"REFUSING: the <command> of {xml} no longer contains {a!r}, which this "
+                         f"generator hardcodes.\n  The wrapper changed and the generated UDT would "
+                         f"silently keep running the old command. Reconcile build() with the XML, "
+                         f"then regenerate.")
+    for xml, reqs in XML_REQUIREMENTS.items():
+        root = ET.parse(ROOT / xml).getroot()
+        got = {r.text.strip(): r.get("version") for r in root.iter("requirement")
+               if r.get("type") == "package" and r.text}
+        for pkg, ver in reqs.items():
+            if got.get(pkg) != ver:
+                sys.exit(f"REFUSING: {xml} requires {pkg} {got.get(pkg)!r}, but this generator "
+                         f"pins a container built for {ver!r}.\n  A requirement bump without a "
+                         f"matching container change makes the classic wrapper and the UDT run "
+                         f"different software. Update CONTAINERS and this table together.")
     for group in DUPLICATED_HELPERS:
         digests = {}
         for rel in group:
@@ -167,6 +237,57 @@ def assert_sources_aligned() -> None:
             sys.exit(f"REFUSING: duplicated helper copies have DIVERGED:\n    {listing}\n"
                      f"  Only the first is inlined, so the others' UDTs would ship stale logic. "
                      f"Reconcile them first.")
+    assert_no_new_duplicates()
+    assert_column_order()
+
+
+def assert_no_new_duplicates() -> None:
+    """Find duplicate helper content DUPLICATED_HELPERS does not know about.
+
+    ⚠ A fourth copy of lc_classify.py landing in tools/longdust/ or tools/sdust/ -- both sibling
+    low-complexity maskers here -- would diverge silently, because only the first copy is ever
+    inlined and the hand-written list would not mention it.
+    """
+    seen: dict[str, list[str]] = {}
+    known = {rel for group in DUPLICATED_HELPERS for rel in group}
+    for path in sorted((ROOT / "tools").rglob("*")):
+        if not path.is_file() or "test-data" in path.parts:
+            continue
+        if path.suffix not in (".py", ".awk", ".sh"):
+            continue
+        seen.setdefault(hashlib.sha256(path.read_bytes()).hexdigest(), []).append(
+            str(path.relative_to(ROOT)))
+    for digest, files in seen.items():
+        if len(files) < 2:
+            continue
+        if set(files) <= known or tuple(sorted(files)) in DUPLICATE_ALLOWLIST:
+            continue
+        sys.exit(f"REFUSING: {len(files)} files share content {digest[:12]} and are not in "
+                 f"DUPLICATED_HELPERS:\n    " + "\n    ".join(files) + "\n"
+                 "  Only one copy is inlined into a UDT, so the others could diverge unnoticed. "
+                 "Add them to DUPLICATED_HELPERS (or to DUPLICATE_ALLOWLIST if they are not "
+                 "inlined anywhere).")
+
+
+def assert_column_order() -> None:
+    """The header's column order must match the order masking_table.py actually emits.
+
+    ⛔ THIS IS THE ONE THE HELP TEXT ADMITTED WAS UNGUARDED, AND IT IS THE WORST OF THEM. Reordering
+    masking_table.py's `maskers` list -- putting `union` first, say -- regenerates BOTH files
+    consistently: `--check` passes, the anchors pass, and every percentage in the published MultiQC
+    table is labelled with the wrong masker. Demonstrated by an adversarial pass; `--check` even
+    TELLS you to regenerate, and regenerating is the step that hides the damage.
+    """
+    src = (ROOT / "tools/masking_table/masking_table.py").read_text(encoding="utf-8")
+    block = re.search(r"maskers\s*=\s*\[(.*?)\]", src, re.DOTALL)
+    if not block:
+        sys.exit("REFUSING: cannot find the `maskers` list in masking_table.py to check its order.")
+    order = re.findall(r'\("(\w+)"', block.group(1))
+    if order != list(MASKER_COLUMNS):
+        sys.exit(f"REFUSING: masking_table.py emits columns in the order {order}, but "
+                 f"brc-masking-header prints {list(MASKER_COLUMNS)}.\n  Every percentage in the "
+                 f"published table would be labelled with the wrong masker, and nothing else would "
+                 f"fail. Reconcile the two.")
 
 
 def build() -> dict[str, str]:
@@ -631,13 +752,30 @@ def main() -> int:
             continue
         path.write_text(body, encoding="utf-8")
         print(f"  {'unchanged' if current == body else 'wrote':>9} udt/{fn}")
+    # ⛔ ORPHANS ARE INVISIBLE TO A GENERATED-SIDE CHECK. --check iterates build() and never looks
+    # at what is on disk, so a UDT that build() no longer produces -- because its key was renamed,
+    # or it was hand-written and never generated at all -- is never compared to anything and stays
+    # deployable and stale. `udt/env_probe.gxtool.yml` is live proof: committed, registerable, and
+    # never generated. Renaming a key is worse: --check correctly reports the NEW file stale, you
+    # regenerate as instructed, and the OLD one is left behind still referenced by the workflow.
+    generated = set(build())
+    on_disk = {p.name for p in UDT.glob("*.gxtool.yml")}
+    orphans = sorted(on_disk - generated - HAND_WRITTEN_UDTS)
+    if orphans:
+        for fn in orphans:
+            print(f"  ORPHAN udt/{fn} — on disk, not produced by build(), never checked")
+        print("  Delete it, add it to build(), or list it in HAND_WRITTEN_UDTS with a reason.")
+        if args.check:
+            return 1
+
     if args.check:
         for fn in stale:
             print(f"  STALE udt/{fn}")
         if stale:
             print("  Regenerate with: python3 scripts/build_softmask_udts.py")
             return 1
-        print("  all committed UDTs match their sources")
+        print(f"  all committed UDTs match their sources ({len(generated)} generated, "
+              f"{len(HAND_WRITTEN_UDTS)} hand-written)")
     return 0
 
 
