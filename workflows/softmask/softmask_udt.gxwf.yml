@@ -1,47 +1,22 @@
 class: GalaxyWorkflow
 label: WF-B softmask (UDT edition, usegalaxy.org)
 doc: >-
-  The usegalaxy.org-runnable form of `softmask.gxwf.yml`. Same masking logic, restructured for the
-  three constraints a public Galaxy imposes, none of which apply to the local Galaxy the original
-  targets.
+  The usegalaxy.org-runnable form of `softmask.gxwf.yml`: same masking logic, restructured for the
+  constraints a public Galaxy imposes. The local wrappers cannot be installed there, so each masker
+  is a User-Defined Tool; a UDT gets one container and the masker images carry no python3, so every
+  masker is two steps. `samtools_faidx` is not installed on usegalaxy.org at all, so `faidx` is a
+  UDT too. The `uppercase` step exists because `maskfasta -soft` was being applied to assemblies
+  that already carried a mask.
 
-  1. THE LOCAL WRAPPERS CANNOT BE INSTALLED, so each masker is a User-Defined Tool. A UDT gets
-     exactly one container and the masker images carry no python3, so every masker is TWO steps:
-     `<masker>_bed3` emits BED3 plus the uppercased FASTA it built, and the shared `lc-classify`
-     turns that pair into the content-annotated BED6 the original produced in one job. The
-     uppercased FASTA is threaded through deliberately -- lc_classify must read the same bases the
-     masker saw.
-  2. `samtools_faidx` IS NOT INSTALLED ON usegalaxy.org. Not a version mismatch: a scan of all 2,370
-     tools in the panel finds no faidx of any kind, though twenty other samtools subcommands are
-     there. `brc-samtools-faidx` wraps the samtools biocontainer, and since it already reads the
-     index it also emits the chrom/length table, which lets the original's `Cut c1,c2` step go.
-  3. UDT STEPS AND SHORT TOOLSHED IDS BOTH REFUSE AT INVOKE, not at import. This file stays
-     PORTABLE -- plain ids, no uuids, no pinned revisions -- and `scripts/run_softmask_udt.py`
-     renders an instance-resolved copy at run time. UUIDs are per-account facts and must not be
-     committed.
+  ⛔ Every one of those decisions is recorded, with the measurement behind it, in the `doc:` of the
+  step it applies to and in the `help:` of the UDT it produced. Read those rather than guessing --
+  several look arbitrary and none are. `udt/` holds the tool definitions and
+  `scripts/build_softmask_udts.py` generates them from `tools/`.
 
-  ⛔ FastLTR AND FastTIR ARE DELIBERATELY ABSENT, AND NOT BECAUSE THEY WERE OVERLOOKED. Both ship in
-  the same `fastan` package as FasTAN and neither can produce a usable mask:
+  ⚠ This file stays PORTABLE: plain tool ids, no uuids, no pinned toolshed revisions.
+  `scripts/run_softmask_udt.py` renders an instance-resolved copy at run time, because a UDT step
+  and a short toolshed id both import cleanly and then refuse at invoke.
 
-    * FastLTR's `-M` emits a `.1ano` whose coordinates are NONDETERMINISTIC GARBAGE. Three runs of
-      the same binary over the same GDB gave end coordinates of 1,294,819,693 / 1,932,353,901 /
-      1,999,462,765 on a 319,920 nt sequence -- four thousand times the input, different every time,
-      which is the signature of uninitialised memory. Its records also carry 12 fields where
-      FasTAN's carry 6, so `ano2bed6.awk` mis-parses them silently. A single such interval would
-      swallow the merged union and mask the whole genome, and every job would exit 0.
-    * FastTIR has NO mask output at all. `FastTIR.c` parses `ARG_FLAGS("v")`; the `.1ano` strings in
-      it are usage boilerplate and a suffix check. It writes `.1aln` self-alignments, and turning
-      those into a mask is an analysis decision rather than a format conversion.
-
-  FasTAN on the SAME GDB returns sane six-field rows, so neither is a fault of the GDB stage. Both
-  tools are also undocumented in any publication -- the FastGA paper does not mention them. Revisit
-  if upstream fixes them; `fastan_gdb` is already built and proven at 101 Mb, so FastLTR would cost
-  one UDT and a converter that understands its record layout.
-
-  ⛔ STILL NOT INCLUDED: masking_table + MultiQC. That wrapper reads `element_identifier` across
-  five whole collections at once, which is exactly the shape where identifiers do not survive into
-  a UDT. Everything else the original produces is here: all four masker tracks, the union, the
-  soft-masked FASTA and the .fai.
 creator:
   - class: Person
     identifier: https://orcid.org/0000-0002-5987-8032
@@ -82,6 +57,14 @@ outputs:
       what makes `softmasked_fasta` CHECKABLE: its covered bases must equal that FASTA's lowercase
       count exactly, and the two are derived from different files by different tools.
       `scripts/verify_softmask_outputs.py` is that check.
+  masking_table:
+    outputSource: masking_header/output
+    doc: >-
+      Sample x masker table of % genome masked, one row per strain. Reassembled from the per-strain
+      rows rather than produced in one job -- see `masking_row`.
+  masking_report:
+    outputSource: masking_multiqc/html_report
+    doc: MultiQC report rendering the masking table (custom content, table).
   uppercased_fasta:
     outputSource: uppercase/output
     doc: >-
@@ -380,3 +363,71 @@ steps:
       dz: false
       five: false
       three: false
+
+  # ---- QC table ------------------------------------------------------------------------------
+  masking_row:
+    tool_id: brc-masking-row
+    label: masking_row
+    position: {top: 700, left: 2900}
+    doc: >-
+      ⛔ ONE JOB PER STRAIN, AND IT DOES NOT KNOW WHICH STRAIN. The classic `masking_table` consumes
+      five WHOLE collections and reads `$el.element_identifier` per element. The obvious port is to
+      map one job per strain reading `$(inputs["<name>|__identifier__"])` -- which WORKS through the
+      tool API and FAILS inside a workflow, dying with "Error occurred while building command line
+      for tool" and naming nothing. Measured both ways on the same tool and collection. So this
+      emits only the numbers and `collapse_rows` supplies the Sample column from Galaxy's own
+      element identifiers.
+    in:
+      dustmasker: gcov_dust/output
+      windowmasker: gcov_window/output
+      tantan: gcov_tantan/output
+      fastan: gcov_fastan/output
+      union: gcov_union/output
+  collapse_rows:
+    tool_id: toolshed.g2.bx.psu.edu/repos/nml/collapse_collections/collapse_dataset/5.1.0
+    label: collapse_rows
+    position: {top: 700, left: 3220}
+    doc: >-
+      Concatenate the per-strain rows AND supply the Sample column. `filename|add_name` with
+      `place_name: same_multiple` prepends each element's IDENTIFIER to its lines, which is the
+      strain name -- the thing `masking_row` cannot obtain for itself inside a workflow.
+
+      ⛔ THE CONDITIONAL FORM DIFFERS BY ROUTE, AND GETTING IT WRONG FAILS SILENTLY. In a gxformat2
+      `state:` it must be NESTED, as below. Through `/api/tools` the same conditional must instead be
+      FLAT pipe-separated keys (`filename|add_name`). Each form is ignored by the other route: the
+      tool still runs and exits 0, and simply prepends nothing -- which then surfaces far downstream
+      as MultiQC's "Inconsistent number of columns", six header fields against five data fields,
+      with nothing pointing back here.
+    in:
+      input_list: masking_row/output
+    state:
+      one_header: false
+      filename:
+        add_name: true
+        place_name: same_multiple
+  masking_header:
+    tool_id: brc-masking-header
+    label: masking_header
+    position: {top: 700, left: 3540}
+    doc: >-
+      Prepend the `Sample<TAB>dustmasker<TAB>...` header. Neither neighbour can: `masking_row` runs
+      per strain so its header would repeat, and `collapse_rows` has just overwritten the first cell
+      of every line with the strain name.
+    in:
+      rows: collapse_rows/output
+
+  masking_multiqc:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/multiqc/multiqc/1.35+galaxy1
+    label: masking_multiqc
+    position: {top: 700, left: 3860}
+    doc: MultiQC report rendering the masking table (custom content, table).
+    in:
+      results_0|software_cond|input: masking_header/output
+    state:
+      results:
+        - software_cond:
+            software: custom_content
+            plot_type: table
+            section_name: "Soft-masking proportions"
+            title: "Per-strain % genome masked"
+            description: "Percent of each genome soft-masked by dustmasker, windowmasker, tantan, fastan, and their union (bedtools genomecov)."

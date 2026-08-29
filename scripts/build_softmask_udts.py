@@ -130,6 +130,7 @@ XML_ANCHORS = {
                                             "-outfmt interval", "interval2bed.awk"],
     "tools/tantan/tantan.xml": ["tantan ", "lc2bed.awk"],
     "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ANOtoBED", "ano2bed6.awk"],
+    "tools/masking_table/masking_table.xml": ["masking_table.py", "--dustmasker", "--union"],
 }
 
 #: Helper files duplicated across wrapper directories. They are byte-identical today; a fix applied
@@ -457,6 +458,114 @@ help:
     Column 1 is the FIRST WHITESPACE TOKEN of the FASTA header, not the whole description line --
     `ano2bed6.awk` splits it. ANOtoBED emits the entire header, and leaving it would make every
     fastan interval look like a different chromosome to `bedtools merge` than the other maskers'.
+"""
+
+    mt = read_helper("tools/masking_table/masking_table.py")
+    out["masking_row.gxtool.yml"] = HEADER + f"""class: GalaxyUserTool
+id: brc-masking-row
+version: "0.2.0"
+name: masking table row (BRC UDT)
+description: One strain's percent-masked values, to be mapped over the genomecov collections
+container: quay.io/biocontainers/python:3.12
+shell_command: |
+  cat > masking_table.py <<'BRC_PY'
+{indent(mt)}
+  BRC_PY
+  set -o pipefail
+  python3 masking_table.py \\
+    --dustmasker "s=$(inputs.dustmasker.path)" \\
+    --windowmasker "s=$(inputs.windowmasker.path)" \\
+    --tantan "s=$(inputs.tantan.path)" \\
+    --fastan "s=$(inputs.fastan.path)" \\
+    --union "s=$(inputs.union.path)" \\
+    --out full.tabular
+  tail -n +2 full.tabular | cut -f2- > row.tabular
+inputs:
+  - name: dustmasker
+    type: data
+    format: tabular
+    label: dustmasker genomecov for THIS strain
+  - name: windowmasker
+    type: data
+    format: tabular
+    label: windowmasker genomecov for THIS strain
+  - name: tantan
+    type: data
+    format: tabular
+    label: tantan genomecov for THIS strain
+  - name: fastan
+    type: data
+    format: tabular
+    label: fastan genomecov for THIS strain
+  - name: union
+    type: data
+    format: tabular
+    label: union genomecov for THIS strain
+outputs:
+  - name: output
+    type: data
+    format: tabular
+    from_work_dir: row.tabular
+    label: percent masked, one strain (values only)
+help:
+  format: markdown
+  content: |
+    ⛔ **THIS TOOL DELIBERATELY DOES NOT KNOW WHICH STRAIN IT IS PROCESSING**, and that is the whole
+    design. The classic `masking_table` reads `$el.element_identifier` across five whole
+    collections. The obvious port is to map one job per strain and have each read its own
+    identifier as `$(inputs["<name>|__identifier__"])` -- and that WORKS when a UDT is mapped
+    through the tool API, which is how it was first verified. It FAILS inside a workflow: the same
+    tool, the same collection, mapped by the workflow engine instead, dies with "Error occurred
+    while building command line for tool", naming nothing.
+
+    So the sample name is supplied by Galaxy instead. `Collapse Collection` with
+    `filename|add_name=true` and `place_name=same_multiple` prepends each element's IDENTIFIER to
+    its lines, which is exactly the Sample column. This tool therefore emits only the numbers, and
+    the header is added afterwards by `brc-masking-header`.
+
+    ⚠ `masking_table.py` is inlined VERBATIM from `tools/masking_table/`, so the percentages are
+    computed by the same code as the classic tool. The dummy `s=` key and the `tail -n +2 | cut -f2-`
+    strip its header and its own Sample column; nothing about the arithmetic is reimplemented.
+"""
+
+    out["masking_header.gxtool.yml"] = HEADER + """class: GalaxyUserTool
+id: brc-masking-header
+version: "0.1.0"
+name: masking table header (BRC UDT)
+description: Prepend the Sample/masker header to the collapsed per-strain rows
+container: quay.io/biocontainers/python:3.12
+shell_command: |
+  set -o pipefail
+  printf 'Sample\\tdustmasker\\twindowmasker\\ttantan\\tfastan\\tunion\\n' > table.tabular
+  cat '$(inputs.rows.path)' >> table.tabular
+inputs:
+  - name: rows
+    type: data
+    format: tabular
+    label: collapsed per-strain rows, strain already prepended
+outputs:
+  - name: output
+    type: data
+    format: tabular
+    from_work_dir: table.tabular
+    label: Sample x masker percent-masked table
+help:
+  format: markdown
+  content: |
+    A header line, and nothing else. It exists because the two steps that could have supplied one
+    each cannot:
+
+    * `brc-masking-row` runs once per strain, so a header emitted there would repeat per row.
+    * `Collapse Collection`'s `one_header` keeps the first element's header -- but only if every
+      element HAS one, and prepending the strain name would corrupt that first cell into the strain
+      rather than `Sample`.
+
+    ⚠ The column order is fixed here and must match the order `masking_table.py` writes, which is
+    the order its `maskers` list defines: dustmasker, windowmasker, tantan, fastan, union. A change
+    there without a change here would mislabel every column and nothing would fail.
+
+    The header is plain, with no leading `#`, so MultiQC custom-content reads it as a table rather
+    than mis-parsing it as embedded YAML.
 """
 
     lc = read_helper("tools/dustmasker/lc_classify.py")

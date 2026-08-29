@@ -29,9 +29,19 @@ from bioblend.galaxy import GalaxyInstance
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / "workflows/softmask/softmask_udt.gxwf.yml"
 UDT_DIR = ROOT / "udt"
+#: Invocation states meaning "Galaxy will create no further jobs for this run".
+#:
+#: ⛔ `completed` WAS MISSING AND THAT INVERTED THE VERDICT. Without it a wholly successful run --
+#: 47/47 jobs ok, every step scheduled -- polled to the full POLL_CEILING and was then reported as
+#: "TIMED OUT ... NOT a pass". The honest-failure fix this file carries was itself failing
+#: dishonestly, in the other direction. Measured against this account's invocation history:
+#: `completed` on 22 of 25, `scheduled` on the rest.
+TERMINAL_INVOCATION_STATES = ("completed", "scheduled", "cancelled", "failed")
+
 TIER_CEILING = 7200          # 2 h per tier; a real chromosome is slow and single-threaded
 UDTS = ("fasta_uppercase", "dustmasker_bed3", "windowmasker_bed3", "tantan_bed3",
-        "lc_classify", "samtools_faidx", "fastan_gdb", "fastan_scan", "fastan_bed")
+        "lc_classify", "samtools_faidx", "fastan_gdb", "fastan_scan", "fastan_bed",
+        "masking_row", "masking_header")
 
 #: Cumulative tiers. Each names the steps present; outputs are pruned to whatever survives.
 TIERS = [
@@ -53,7 +63,7 @@ TIERS = [
                                "tantan_bed3", "tantan_classify",
                                "fastan_gdb", "fastan_scan", "fastan_bed",
                                "union_cat", "sort_bed", "merge_bed", "maskfasta", "faidx"]),
-    ("7 everything (+ genomecov)", None),   # None = keep every step
+    ("7 everything (+ genomecov, table, report)", None),   # None = keep every step
 ]
 
 
@@ -149,7 +159,7 @@ def run_tier(gi: GalaxyInstance, wf_id: str, hdca: str, history: str) -> tuple[b
         detail = gi.invocations.show_invocation(inv["id"])
         states = gi.invocations.get_invocation_summary(inv["id"]).get("states", {})
         pending = {k: v for k, v in states.items() if k in ("new", "queued", "running", "paused")}
-        if detail.get("state") in ("scheduled", "cancelled", "failed") and states and not pending:
+        if detail.get("state") in TERMINAL_INVOCATION_STATES and states and not pending:
             timed_out = False
             break
         time.sleep(15)
