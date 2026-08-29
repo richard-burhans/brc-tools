@@ -112,6 +112,15 @@ steps:
   dustmasker_classify:
     tool_id: brc-lc-classify
     label: dustmasker_classify
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: dustmasker LC (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: DustMakser}
     position: {top: 240, left: 980}
     doc: Annotate the DUST intervals with repeat-unit signature and purity -> BED6.
     in:
@@ -129,6 +138,15 @@ steps:
   windowmasker_classify:
     tool_id: brc-lc-classify
     label: windowmasker_classify
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: windowmasker repeats (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: WindowMasker}
     position: {top: 460, left: 980}
     in:
       fasta: windowmasker_bed3/upper_fasta
@@ -145,6 +163,15 @@ steps:
   tantan_classify:
     tool_id: brc-lc-classify
     label: tantan_classify
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: tantan LC (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: TanTan}
     position: {top: 680, left: 980}
     in:
       fasta: tantan_bed3/upper_fasta
@@ -172,6 +199,15 @@ steps:
   fastan_bed:
     tool_id: brc-fastan-bed
     label: fastan_bed
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: fastan tandem (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: fastan}
     position: {top: 900, left: 1320}
     doc: >-
       ANOtoBED -> BED6. Needs fastga 1.5.20260729, NOT 1.5: released 1.5 cannot open a .1ano written
@@ -223,6 +259,15 @@ steps:
   maskfasta:
     tool_id: bedtools_maskfastabed
     label: maskfasta
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'softmasked FASTA (-> WF-C masked_fastas / query_masked)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: SoftmaskedFasta}
     position: {top: 300, left: 2580}
     doc: >-
       Soft-mask the UPPERCASED assembly at the merged union intervals (-soft), zipped by strain.
@@ -236,6 +281,15 @@ steps:
   faidx:
     tool_id: brc-samtools-faidx
     label: faidx
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'softmasked FASTA index (.fai)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: Softmaskedfai}
     position: {top: 300, left: 2900}
     doc: >-
       Index the soft-masked FASTA. Replaces the original's `samtools_faidx` step, which cannot run
