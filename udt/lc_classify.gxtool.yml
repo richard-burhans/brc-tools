@@ -74,11 +74,23 @@ shell_command: |
       seq = load_fasta(sys.argv[1])
       src = sys.stdin if (len(sys.argv) < 3 or sys.argv[2] == "-") else open(sys.argv[2])
       out = sys.stdout
-      for line in src:
+      for n, line in enumerate(src, 1):
           f = line.rstrip("\n").split("\t")
           if len(f) < 3: continue
           c = f[0]; a = int(f[1]); b = int(f[2])
-          nm, sc = classify(seq.get(c, "")[a:b])
+          # A BED naming a sequence the FASTA does not hold is a MISMATCHED PAIR of inputs, not an
+          # interval to classify. Falling back to "" made classify() return ("lc", 0) and this wrote
+          # a complete, well-formed, entirely wrong BED6 line and exited 0 -- and every downstream
+          # check passes it: the row count is preserved, there are six columns, 0 is a legal score,
+          # and "lc" is a legal signature. Nothing anywhere would notice.
+          if c not in seq:
+              sys.exit("lc_classify: %s line %d names sequence %r, which is not in %s. "
+                       "The BED and the FASTA do not describe the same assembly."
+                       % (sys.argv[2] if len(sys.argv) > 2 else "stdin", n, c, sys.argv[1]))
+          if b > len(seq[c]) or a < 0 or a >= b:
+              sys.exit("lc_classify: %s line %d has interval %d-%d, outside %r (length %d)."
+                       % (sys.argv[2] if len(sys.argv) > 2 else "stdin", n, a, b, c, len(seq[c])))
+          nm, sc = classify(seq[c][a:b])
           out.write("%s\t%d\t%d\t%s\t%d\t.\n" % (c, a, b, nm, sc))
   
   if __name__ == "__main__":
