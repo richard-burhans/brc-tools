@@ -187,6 +187,12 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fasta", type=pathlib.Path, action="append", default=[],
                     help="an assembly FASTA; repeat for more. Becomes the input collection.")
+    ap.add_argument("--hdca", metavar="ID",
+                    help="run on an EXISTING collection instead of uploading. The workflow "
+                         "uppercases its input, so a collection that is already uppercased (or "
+                         "already soft-masked) gives the same result as the raw assemblies -- the "
+                         "mask is always recomputed de novo. Saves re-uploading large genomes.")
+    ap.add_argument("--history-name", default="WF-B softmask (UDT edition)")
     ap.add_argument("--register-only", action="store_true")
     ap.add_argument("--work", type=pathlib.Path, default=ROOT / "build/softmask_udt")
     args = ap.parse_args()
@@ -196,15 +202,22 @@ def main() -> int:
     uuids = register_all(gi)
     if args.register_only:
         return 0
-    if not args.fasta:
-        sys.exit("Need at least one --fasta (or use --register-only).")
+    if bool(args.fasta) == bool(args.hdca):
+        sys.exit("Give exactly one of --fasta (upload) or --hdca (reuse), or --register-only.")
 
     print("Rendering the instance-resolved workflow")
     wf_id = render_and_import(gi, uuids, args.work)
 
-    history = gi.histories.create_history(name="WF-B softmask (UDT edition)")
+    history = gi.histories.create_history(name=args.history_name)
     print(f"  history {gi.base_url}/histories/view?id={history['id']}")
-    hdca = upload_collection(gi, history["id"], args.fasta)
+    if args.hdca:
+        # Galaxy copies an input collection into the target history itself, so a run can reuse a
+        # collection that lives elsewhere without duplicating gigabytes on the way in.
+        hdca = args.hdca
+        n = gi.dataset_collections.show_dataset_collection(hdca).get("element_count")
+        print(f"  reusing collection {hdca} ({n} element(s))")
+    else:
+        hdca = upload_collection(gi, history["id"], args.fasta)
 
     handles = gi.workflows.show_workflow(wf_id)["inputs"]
     inputs = {sid: {"src": "hdca", "id": hdca} for sid in handles}
