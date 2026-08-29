@@ -11,7 +11,7 @@
     -->
     <requirements>
         <requirement type="package" version="0.8">fastan</requirement>
-        <requirement type="package" version="1.5">fastga</requirement>
+        <requirement type="package" version="1.5.20260729">fastga</requirement>
     </requirements>
     <command detect_errors="exit_code"><![CDATA[
 set -o pipefail &&
