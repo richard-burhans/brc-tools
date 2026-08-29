@@ -26,11 +26,9 @@ import pathlib
 import sys
 import time
 
-import yaml
 from bioblend.galaxy import GalaxyInstance
+from softmask_lib import fasta_stats, register_one
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-UDT_DIR = ROOT / "udt"
 BEDTOOLS = "toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_"
 
 PASS, FAIL = "  ok  ", " FAIL "
@@ -79,29 +77,10 @@ class Checker:
         return body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
 
 
-def register(gi: GalaxyInstance, name: str) -> str:
-    doc = yaml.safe_load((UDT_DIR / f"{name}.gxtool.yml").read_text(encoding="utf-8"))
-    created = gi.make_post_request(f"{gi.url}/unprivileged_tools",
-                                   payload={"representation": doc}, params={"key": gi.key})
-    return created["uuid"]
-
-
 def run_udt(gi: GalaxyInstance, history: str, uuid: str, inputs: dict) -> dict:
     return gi.make_post_request(f"{gi.url}/tools", params={"key": gi.key},
                                 payload={"history_id": history, "tool_uuid": uuid,
                                          "inputs": inputs})
-
-
-def fasta_stats(text: str) -> tuple[int, int, int]:
-    """(sequences, residues, lowercase residues)."""
-    seqs = res = low = 0
-    for line in text.splitlines():
-        if line.startswith(">"):
-            seqs += 1
-            continue
-        res += len(line)
-        low += sum(1 for c in line if "a" <= c <= "z")
-    return seqs, res, low
 
 
 def bed_span(text: str) -> int:
@@ -126,7 +105,7 @@ def main() -> int:
     gi = GalaxyInstance(url=url.rstrip("/"), key=key)
 
     print("Registering the UDTs this chain needs")
-    uuids = {n: register(gi, n) for n in
+    uuids = {n: register_one(gi, n)[2] for n in
              ("fasta_uppercase", "samtools_faidx", "dustmasker_bed3",
               "windowmasker_bed3", "tantan_bed3", "lc_classify")}
     for n, u in uuids.items():

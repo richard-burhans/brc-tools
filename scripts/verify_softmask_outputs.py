@@ -39,44 +39,15 @@ An invocation exposes `output_collections` keyed by the workflow's OWN declared 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from bioblend.galaxy import GalaxyInstance
-
-#: Invocation states in which Galaxy may still create jobs. Everything else means scheduling is
-#: finished, whatever the jobs are doing.
-#:
-#: ⛔ THE VALUES COME FROM GALAXY'S OWN ENUM, not from watching behaviour. lib/galaxy/schema/
-#: invocation.py::InvocationState documents each one, and two of these were missing when this set
-#: was written from observation alone:
-#:     new                       "Brand new workflow invocation"
-#:     ready                     "Workflow ready for another iteration of scheduling."
-#:     requires_materialization  "an otherwise NEW or READY workflow that requires inputs to be
-#:                                materialized (undeferred)"
-#:     cancelling                "invocation scheduler will cancel job in next iteration."
-#:
-#: ⚠ AND THE SAME FILE SETTLES WHY `completed` CANNOT BE USED AS THE WAIT CONDITION. It defines
-#: `scheduled` as "Workflow has been scheduled" and `completed` as "All jobs have reached terminal
-#: states" -- so `completed` is the state one WANTS, and it is nevertheless unreliable: measured
-#: over 60 invocations on this account, 50 `completed` and 9 `scheduled`, interleaved across the
-#: whole timeline, with structurally identical runs landing differently and one sitting `scheduled`
-#: for 6.8 days with all ten jobs `ok` and `update_time` frozen at creation. Galaxy records the
-#: transition in a separate `workflow_invocation_completion` row (model/__init__.py), so an
-#: invocation whose completion hook never fires stays `scheduled` forever. Wait on the JOBS.
-SCHEDULING_IN_PROGRESS = ("new", "ready", "requires_materialization", "cancelling")
+from softmask_lib import SCHEDULING_IN_PROGRESS, connect, fasta_stats
 
 #: Declared output names in workflows/softmask/softmask_udt.gxwf.yml.
 UPPER_OUT = "uppercased_fasta"
 UNION_OUT = "mask_union"
 MASKED_OUT = "softmasked_fasta"
-
-
-def connect() -> GalaxyInstance:
-    url, key = os.environ.get("GALAXY_URL"), os.environ.get("GALAXY_API_KEY")
-    if not url or not key:
-        sys.exit("GALAXY_URL and GALAXY_API_KEY must be set.")
-    return GalaxyInstance(url=url.rstrip("/"), key=key)
 
 
 def elements(gi: GalaxyInstance, collection_id: str) -> dict[str, str]:
@@ -87,17 +58,6 @@ def elements(gi: GalaxyInstance, collection_id: str) -> dict[str, str]:
 def text(gi: GalaxyInstance, dataset_id: str) -> str:
     b = gi.datasets.download_dataset(dataset_id, use_default_filename=False)
     return b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)
-
-
-def fasta_stats(t: str) -> tuple[int, int]:
-    """(residues, lowercase residues)."""
-    res = low = 0
-    for line in t.splitlines():
-        if line.startswith(">"):
-            continue
-        res += len(line)
-        low += sum(1 for c in line if "a" <= c <= "z")
-    return res, low
 
 
 def bed_intervals(t: str) -> set[tuple[str, int, int]]:
@@ -138,12 +98,22 @@ def lowercase_runs(t: str) -> set[tuple[str, int, int]]:
     not have truncated headers, and comparing the two naively would mismatch on description text.
     """
     runs: set[tuple[str, int, int]] = set()
-    chrom, pos, start = None, 0, None
+    chrom: str | None = None
+    pos, start = 0, None
     for line in t.splitlines():
         if line.startswith(">"):
             if chrom is not None and start is not None:
                 runs.add((chrom, start, pos))
             chrom, pos, start = line[1:].split()[0] if len(line) > 1 else "", 0, None
+            continue
+        if chrom is None:
+            # ⛔ SEQUENCE BEFORE ANY HEADER. Without this the run would be recorded under a chrom of
+            # None, which matches no BED interval, so a malformed FASTA would surface as a coordinate
+            # DISAGREEMENT rather than as the parse failure it is -- and telling those two apart is
+            # this function's entire job. Blank leading lines are not sequence and are skipped.
+            if line.strip():
+                sys.exit("lowercase_runs: sequence data appears before any '>' header; "
+                         "this is not a FASTA and its coordinates cannot be trusted.")
             continue
         for ch in line:
             if "a" <= ch <= "z":
@@ -213,8 +183,8 @@ def main() -> int:
         union = bed_intervals(text(gi, mg_e[s]))
         masked_text = text(gi, mk_e[s])
         applied = lowercase_runs(masked_text)
-        res, low = fasta_stats(masked_text)
-        ures, ulow = fasta_stats(text(gi, up_e[s]))
+        _, res, low = fasta_stats(masked_text)
+        _, ures, ulow = fasta_stats(text(gi, up_e[s]))
         if res == 0:
             print(f"    {s}\n      ⛔ masked FASTA is EMPTY")
             failures += 1
