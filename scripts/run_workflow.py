@@ -22,7 +22,6 @@ from pathlib import Path
 
 from bioblend.galaxy import GalaxyInstance
 
-
 REPO = Path(__file__).resolve().parents[1]
 HIST_JSON = REPO / "execution" / "history.json"
 INV_JSON = REPO / "execution" / "invocation.json"
@@ -39,14 +38,20 @@ WF_PARAMS = {
 }
 
 
-def wait_for_invocation(gi, wf_id, inv_id, timeout=8 * 3600, poll=30):
+def wait_for_invocation(gi, inv_id, timeout=8 * 3600, poll=30):
     start = time.time()
     while time.time() - start < timeout:
         inv = gi.invocations.show_invocation(inv_id)
         state = inv["state"]
-        # ⛔ `completed` MUST BE HERE. It is the state Galaxy actually settles in -- 22 of 25
-        # invocations on a real account -- and without it a wholly successful run never returns:
-        # the loop falls through to `raise TimeoutError` after the full 8 hours.
+        # ⛔ `completed` MUST BE HERE, and `scheduled` MUST STAY. Galaxy settles in either one,
+        # unpredictably: 50 `completed` and 9 `scheduled` across 60 invocations on a real account,
+        # interleaved through the whole timeline, one sitting `scheduled` for 6.8 days with every
+        # job ok. lib/galaxy/schema/invocation.py defines `scheduled` as "workflow has been
+        # scheduled" and `completed` as "all jobs have reached terminal states", and the transition
+        # between them is written from a separate workflow_invocation_completion row -- so an
+        # invocation whose completion hook never fires stays `scheduled` forever. Testing for only
+        # one of the two means a wholly successful run never returns: the loop falls through to
+        # `raise TimeoutError` after the full 8 hours. The job states below are the real test.
         if state in ("ok", "scheduled", "completed"):
             jobs = gi.invocations.get_invocation_summary(inv_id).get("states", {})
             if jobs.get("running", 0) == 0 and jobs.get("new", 0) == 0 and jobs.get("queued", 0) == 0:
@@ -96,7 +101,7 @@ def main() -> int:
     inv_id = inv["id"]
     print(f"invocation_id={inv_id}")
 
-    final = wait_for_invocation(gi, wf_id, inv_id)
+    final = wait_for_invocation(gi, inv_id)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     contents = gi.histories.show_history(history_id, contents=True, details="all")
