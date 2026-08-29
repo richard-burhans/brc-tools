@@ -22,6 +22,7 @@ creator:
     identifier: https://orcid.org/0000-0002-5987-8032
     name: Anton Nekrutenko
   - class: Person
+    identifier: https://orcid.org/0009-0006-5949-0958
     name: Richard Burhans
   - class: Person
     name: Claude Opus 5
