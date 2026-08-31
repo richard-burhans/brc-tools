@@ -1,4 +1,4 @@
-<tool id="fastan" name="fastan" version="0.8+galaxy0" profile="23.0">
+<tool id="fastan" name="fastan" version="0.8+galaxy1" profile="23.0">
     <description>FASTAN tandem-repeat arrays as content-annotated BED6</description>
     <!--
       Dependencies come from bioconda. Both of the blockers this wrapper was written
