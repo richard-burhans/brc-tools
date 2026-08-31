@@ -157,7 +157,11 @@ def main() -> int:
                 except (ValueError, KeyError):
                     lines.append(f"| {k} | {gs.get(k)} | {vs.get(k)} | - |")
             lines.append(f"\n**odgi stats within +-0.5%%: {stats_ok}**")
-        except subprocess.CalledProcessError as e:
+        # ValueError belongs here beside CalledProcessError: `odgi_stats` zips strict, so a
+        # malformed stat block raises from inside this block. Without it the exception escapes
+        # past REPORT.write_text below and the run produces NO report at all -- discarding the
+        # GFA counts and md5 sections already computed above, which do not depend on odgi.
+        except (subprocess.CalledProcessError, ValueError) as e:
             lines.append(f"\n**odgi build/stats failed: {e}**")
 
     REPORT.parent.mkdir(parents=True, exist_ok=True)

@@ -43,9 +43,10 @@ import argparse
 import csv
 import sys
 from collections import Counter, defaultdict
+from pathlib import Path
 
 
-def load_edges(path):
+def load_edges(path: Path):
     """Return undirected gene-gene edges as {frozenset({node_a, node_b})}.
 
     rbest ships both directions of most pairs. Deduplicating here is what makes
@@ -97,9 +98,11 @@ def label_of(n_strains, max_copies, n_all):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--edges", required=True, help="rbest_edges.tsv from WF-E")
-    ap.add_argument("--table", help="WF-E ortholog_table.tsv, to compare against")
-    ap.add_argument("--out", help="write the reconstructed table here")
+    # ⚠ type=Path, and it is load-bearing: the bodies below call `.open()` on all three. A bare
+    # string here is an AttributeError on every invocation, not a style preference.
+    ap.add_argument("--edges", required=True, type=Path, help="rbest_edges.tsv from WF-E")
+    ap.add_argument("--table", type=Path, help="WF-E ortholog_table.tsv, to compare against")
+    ap.add_argument("--out", type=Path, help="write the reconstructed table here")
     ap.add_argument("--min-clique", type=float, default=0.9,
                     help="report groups below this clique completeness (default 0.9)")
     a = ap.parse_args()

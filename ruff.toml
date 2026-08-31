@@ -11,6 +11,20 @@
 target-version = "py312"
 line-length = 120
 
+# ⚠ SCOPED TO scripts/ ON PURPOSE, and the scope is the honest half of this config. A ruff.toml at
+# the repo root governs the WHOLE tree -- so a bare `ruff check .`, or any editor that picks the
+# root config up, reports 468 errors (ruff 0.16.3): tools/ 239, libs/ 118, workflows/ 74,
+# execution/ 37. That backlog is real and is NOT addressed here; this PR fixes scripts/ only.
+# PTH123 alone accounts for 125 of those sites, and applying it without checking each receiver's
+# type is exactly what produced this PR's own `'str' object has no attribute 'open'` -- 125 more
+# chances to ship that. Widening the scope is a separate change, per directory, each verified by
+# running the thing afterwards.
+# `extend-exclude`, NOT `include = ["scripts/**/*.py"]`: an include list makes `ruff check tools/`
+# answer "warning: No Python files found" and then "All checks passed", which is a check reporting
+# clean while seeing nothing. An exclude is not applied to paths named explicitly on the command
+# line, so `ruff check .` is quiet while `ruff check tools/` still shows all 239. Verified both.
+extend-exclude = ["tools", "libs", "workflows", "execution"]
+
 [lint]
 # Beyond ruff's default E4/E7/E9/F: import hygiene (I), modern syntax (UP),
 # likely bugs (B), simplification (SIM), pathlib over os.path (PTH),
@@ -32,14 +46,9 @@ ignore = [
     "RUF001", "RUF002", "RUF003",
 ]
 
-[lint.per-file-ignores]
-# The tier harness and the workflow drivers each keep one deliberate broad-except
-# boundary, so that a failure is REPORTED per tier rather than aborting the run.
-# Those sites carry an inline noqa with the rationale; this is the escape hatch
-# for adding another, and should stay rare.
-
-[lint.pylint]
-# Run the nesting check explicitly; PLR1702 is a preview rule and enabling
-# `preview` to reach it would turn on every other preview rule too:
-#   ruff check --preview --select PLR1702 scripts/
-max-nested-blocks = 4
+# No [lint.per-file-ignores] and no [lint.pylint] here, deliberately, because both were carried
+# over inert from the sibling repo: the ignores table was EMPTY under a comment describing files
+# this repo does not have, and `max-nested-blocks` does nothing while PL is absent from `select`
+# and PLR1702 stays preview-only (measured: 0 PLR1702 across the tree). A setting that reads as an
+# enforced limit and enforces nothing is worse than its absence. The broad-except boundaries this
+# repo does keep carry an inline `noqa: BLE001` with their rationale at the site.
