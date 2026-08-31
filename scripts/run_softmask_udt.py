@@ -31,52 +31,16 @@ and pinning `+galaxyN` revisions is what the short-id convention exists to avoid
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import sys
-import time
 
-import yaml
 from bioblend.galaxy import GalaxyInstance
-from softmask_lib import ROOT, SCHEDULING_IN_PROGRESS, WORKFLOW, await_dataset, connect, invoke, register_all
+from run_udt_workflow import await_invocation, render_and_import
+from softmask_lib import ROOT, WORKFLOW, await_dataset, connect, invoke, register_all
 
 #: Only the tools this workflow uses. `env_probe` lives in udt/ too and is a diagnostic.
 POLL_SECONDS = 20
 POLL_CEILING = 21600          # 6 h: a 101 Mb chromosome, single-threaded, two-pass windowmasker
-
-
-def render_and_import(gi: GalaxyInstance, uuids: dict[str, str], work: pathlib.Path) -> str:
-    """Portable gxformat2 -> native -> identities resolved -> re-imported. Returns workflow id."""
-    portable = gi.workflows.import_workflow_dict(yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")))
-    native = gi.workflows.export_workflow_dict(portable["id"])
-    gi.workflows.delete_workflow(portable["id"])  # a scaffold, not an artifact
-
-    notes, resolved = [], 0
-    for step in native["steps"].values():
-        tool_id = step.get("tool_id")
-        if not tool_id:
-            continue
-        if tool_id in uuids:
-            step["tool_uuid"] = uuids[tool_id]
-            notes.append(f"    {tool_id:28} -> uuid {uuids[tool_id]}")
-        else:
-            full = gi.tools.show_tool(tool_id)["id"]
-            if full != tool_id:
-                step["tool_id"] = step["content_id"] = full
-                notes.append(f"    {tool_id:28} -> {full}")
-            else:
-                notes.append(f"    {tool_id:28} (built-in, unchanged)")
-        resolved += 1
-    print("\n".join(notes))
-
-    native["name"] = "WF-B softmask (UDT edition) — resolved for this instance"
-    work.mkdir(parents=True, exist_ok=True)
-    (work / "workflow_resolved.ga").write_text(json.dumps(native, indent=2) + "\n", encoding="utf-8")
-    print(f"  rendered {resolved} step(s) -> {work / 'workflow_resolved.ga'}")
-
-    imported = gi.workflows.import_workflow_dict(native)
-    print(f"  imported {imported['id']}")
-    return imported["id"]
 
 
 #: Suffixes stripped to derive an element identifier, longest first within each group.
@@ -132,56 +96,6 @@ def upload_collection(gi: GalaxyInstance, history_id: str, fastas: list[pathlib.
     return hdca["id"]
 
 
-def await_invocation(gi: GalaxyInstance, invocation_id: str) -> int:
-    """Wait for every job to reach a terminal state, then report EVERY step. 0 iff all jobs are ok.
-
-    ⛔ A TIMEOUT IS A FAILURE, NOT A PASS. The previous version polled `while now < deadline` and
-    then fell straight into the reporting block, where an invocation step's `state` of `scheduled`
-    counted as OK -- so a run that exhausted POLL_CEILING with jobs still executing exited 0. The
-    one thing this function exists to report is whether the run finished, and it reported success
-    for a run that had not.
-
-    ⛔ AND THE PASS/FAIL DECISION READS JOB STATES, NOT STEP STATES. An invocation step's `state` is
-    its SCHEDULING state (`new`/`ready`/`scheduled`); a step whose job died still reads `scheduled`.
-    The step list is printed for orientation only. The verdict comes from the job-state summary.
-
-    ⚠ The wait cannot stop at "all current jobs are terminal" either: with a mapped-over collection
-    Galaxy creates jobs incrementally, so `{"ok": 1}` is reachable while most of the graph has not
-    been scheduled yet. It waits for the INVOCATION to leave `new`/`ready` as well.
-    """
-    deadline = time.monotonic() + POLL_CEILING
-    timed_out = True
-    while time.monotonic() < deadline:
-        detail = gi.invocations.show_invocation(invocation_id)
-        states = gi.invocations.get_invocation_summary(invocation_id).get("states", {})
-        pending = {k: v for k, v in states.items() if k in ("new", "queued", "running", "paused")}
-        scheduling_done = detail.get("state") not in SCHEDULING_IN_PROGRESS
-        if scheduling_done and states and not pending:
-            timed_out = False
-            break
-        print(f"    ... invocation={detail.get('state')} jobs={states or '{}'}")
-        time.sleep(POLL_SECONDS)
-
-    detail = gi.invocations.show_invocation(invocation_id)
-    states = gi.invocations.get_invocation_summary(invocation_id).get("states", {})
-    for step in detail.get("steps", []):
-        label = step.get("workflow_step_label") or f"step {step.get('order_index')}"
-        print(f"    {label:24} {step.get('state') or '-'}")
-    print(f"  invocation state: {detail.get('state')}  |  jobs: {states or '{}'}")
-
-    if timed_out:
-        print(f"  ⛔ TIMED OUT after {POLL_CEILING}s with jobs still pending -- NOT a pass.")
-        return 1
-    bad = {k: v for k, v in states.items() if k != "ok"}
-    if bad:
-        print(f"  ⛔ jobs did not all succeed: {bad}")
-        return 1
-    if not states:
-        print("  ⛔ the invocation produced NO jobs at all -- nothing ran.")
-        return 1
-    return 0
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -206,7 +120,8 @@ def main() -> int:
         sys.exit("Give exactly one of --fasta (upload) or --hdca (reuse), or --register-only.")
 
     print("Rendering the instance-resolved workflow")
-    wf_id = render_and_import(gi, uuids, args.work)
+    wf_id = render_and_import(gi, WORKFLOW, uuids, args.work,
+                              "WF-B softmask (UDT edition) — resolved for this instance")
 
     history = gi.histories.create_history(name=args.history_name)
     print(f"  history {gi.base_url}/histories/view?id={history['id']}")
