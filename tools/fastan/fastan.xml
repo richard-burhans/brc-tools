@@ -5,13 +5,21 @@
       around have since been resolved upstream:
         * fastan 0.8 (masking-enabled, -m / .1ano) shipped in bioconda-recipes PR #66389,
           merged 2026-06-17; bioconda now offers 0.5 and 0.8.
-        * ANOtoBED IS installed by the fastga 1.5 package; see its build.sh, which
-          installs ANOtoBED, BEDtoANO, ANOstat and ANOshow alongside FAtoGDB.
+        * ANOtoBED IS installed by the fastga package; see its build.sh, which installs
+          ANOtoBED, BEDtoANO, ANOstat and ANOshow alongside FAtoGDB.
       FAtoGDB and ANOtoBED come from fastga; FasTAN comes from fastan.
+
+      fastga is pinned to 1.5.20260729, NOT 1.5, and the difference is not cosmetic.
+      Released 1.5 contains ANOtoBED but cannot READ what FasTAN writes. Upstream
+      redefined the ano M record and added a P record in 0a4a4db ("ANO file definition
+      change", 2026-04-23), three months after v1.5 was tagged, and no release has
+      followed. FASTAN 0.8 emits the new schema, so the ANOtoBED in fastga 1.5 exits
+      "Failed to open .1ano file", naming no version, which is what makes this worth
+      pinning rather than documenting. bioconda-recipes#68612 added 1.5.20260729.
     -->
     <requirements>
         <requirement type="package" version="0.8">fastan</requirement>
-        <requirement type="package" version="1.5">fastga</requirement>
+        <requirement type="package" version="1.5.20260729">fastga</requirement>
     </requirements>
     <command detect_errors="exit_code"><![CDATA[
 set -o pipefail &&
