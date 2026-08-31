@@ -29,6 +29,7 @@
     <tool file="vg/view.xml"/>
   </section>
   <section id="pangenome_masking" name="Pangenome :: Masking / repeats">
+    <tool file="fasta_uppercase/fasta_uppercase.xml"/>
     <tool file="sdust/sdust.xml"/>
     <tool file="longdust/longdust.xml"/>
     <tool file="dustmasker/dustmasker.xml"/>

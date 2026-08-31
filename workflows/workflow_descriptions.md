@@ -213,8 +213,20 @@ genome each tool masked.
 
 ### step:assemblies
 
-The raw panel genomes, same collection WF-A takes. Every step here maps over it, so all
-eight strains are masked independently and in parallel.
+The raw panel genomes, same collection WF-A takes. `uppercase` maps over it and everything
+after that maps over `uppercase`'s output, so all eight strains are masked independently and
+in parallel.
+
+### step:uppercase
+
+Rewrites every sequence line in upper case, so that what this workflow publishes carries this
+workflow's mask and nothing else. Assemblies frequently arrive already soft-masked — PvP01 in
+the captured run does — and while each masker below upper-cases its own working copy anyway
+(the BED tracks were always de novo), `maskfasta -soft` lower-cases the union *on top of*
+whatever was lower-case already. Without this step the published FASTA is the union of two
+masks with no way to tell them apart, and the tracks beside it describe only one of them.
+Header lines are left byte-for-byte alone, because scaffold names are case-sensitive and
+renaming them would break every downstream join.
 
 ### step:dustmasker
 

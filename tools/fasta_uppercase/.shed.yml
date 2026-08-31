@@ -1,0 +1,15 @@
+categories:
+- Sequence Analysis
+description: fasta_uppercase - upper-case a FASTA, discarding any pre-existing soft-masking
+long_description: |
+  Rewrites every sequence line of a FASTA in upper case and leaves header lines
+  byte-for-byte alone, because sequence names are case-sensitive identifiers and a
+  blanket tr(1) renames every scaffold. Reports on stderr how many residues were
+  lower-case before the rewrite. Used in Phase B (WF-B) as the first step, so that
+  bedtools maskfasta -soft writes this workflow's own mask rather than its union
+  with whatever soft-masking the assembly arrived carrying.
+name: fasta_uppercase
+owner: nekrut
+homepage_url: https://github.com/nekrut/brc-tools
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/fasta_uppercase
+type: unrestricted

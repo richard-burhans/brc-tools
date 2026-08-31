@@ -52,8 +52,19 @@ the tool. Sequence names are case-sensitive identifiers, so a blanket
 **Why WF-B needs it.** Each masker already upper-cases its own private working copy,
 so the BED tracks were always computed de novo. ``bedtools maskfasta -soft``, however,
 lower-cases the union intervals *on top of whatever was already lower-case*. Applied to
-an assembly that arrives soft-masked — cs10 ships 46.8% masked from NCBI — the published
-soft-masked FASTA becomes the union of this pipeline's mask and the assembly's own, with
-no way to tell them apart, while the BED tracks report only the former.
+an assembly that arrives soft-masked, the published soft-masked FASTA becomes the union
+of this pipeline's mask and the assembly's own, with no way to tell them apart, while the
+BED tracks report only the former.
+
+**This panel is such a case**, and the evidence is in this repository rather than elsewhere.
+In the captured WF-B run — invocation ``75ed0631e40c6c7b``, ``workflows/examples/wf_b_examples.json``
+— PvP01 arrives already soft-masked: its 880-base input peek is **75.9%** lower-case, and the same
+peek of the published ``maskfasta`` output is **91.6%**, with no position reverted to upper case.
+This workflow's own union for PvP01, genome-wide, is **39.01%** (that run's ``masking_table``).
+So the FASTA it published carried mostly the mask the assembly came with, while the BED tracks
+beside it described only the 39.01%.
+
+*(The 75.9 / 91.6 pair is measured on that one captured peek, not genome-wide; it establishes the
+direction and the mechanism, and the union figure is the genome-wide one.)*
     ]]></help>
 </tool>
