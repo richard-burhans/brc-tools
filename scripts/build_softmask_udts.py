@@ -789,7 +789,18 @@ def main() -> int:
     # regenerate as instructed, and the OLD one is left behind still referenced by the workflow.
     generated = set(build())
     on_disk = {p.name for p in UDT.glob("*.gxtool.yml")}
-    orphans = sorted(on_disk - generated - HAND_WRITTEN_UDTS)
+    # ⚠ A CONVERTED UDT IS NOT AN ORPHAN, IT IS CHECKED SOMEWHERE ELSE. udt/ also holds documents
+    # emitted by the fork-side converter, which stamps each one with a `# provenance:` block naming
+    # its source wrapper and the hashes of that wrapper's <command> and macros.xml.
+    # scripts/check_udt_provenance.py verifies those with the standard library. This exemption is
+    # DERIVED from the stamp rather than listed by hand, so a new converted UDT needs no edit here
+    # -- and the count is printed, so "no orphans" can never quietly mean "nothing was examined".
+    converted = {p.name for p in UDT.glob("*.gxtool.yml")
+                 if "# provenance:" in p.read_text(encoding="utf-8")}
+    if converted:
+        print(f"  {len(converted)} converted UDT(s) deferred to scripts/check_udt_provenance.py: "
+              f"{', '.join(sorted(converted))}")
+    orphans = sorted(on_disk - generated - HAND_WRITTEN_UDTS - converted)
     if orphans:
         for fn in orphans:
             print(f"  ORPHAN udt/{fn} — on disk, not produced by build(), never checked")
@@ -804,7 +815,7 @@ def main() -> int:
             print("  Regenerate with: python3 scripts/build_softmask_udts.py")
             return 1
         print(f"  all committed UDTs match their sources ({len(generated)} generated, "
-              f"{len(HAND_WRITTEN_UDTS)} hand-written)")
+              f"{len(HAND_WRITTEN_UDTS)} hand-written, {len(converted)} converted)")
     return 0
 
 
