@@ -1,0 +1,65 @@
+# A diagnostic UDT, not a tool anybody runs for its output.
+#
+# WHY IT EXISTS. `UserToolSource` ACCEPTS `type: data_collection` -- measured against
+# galaxy-tool-util 26.1.1, alongside `type: data` with `multiple: true`; only `type: collection` is
+# rejected. What it does NOT say is what `$(inputs.sigs.path)` then renders to at run time: a
+# directory of the elements, a single path, or something else -- and whether the ELEMENT
+# IDENTIFIERS survive into the filenames.
+#
+# ⛔ THAT ONE FACT DECIDES SEVERAL PORTS. `sourmash_compare` stages every signature as
+# `stage/<element_identifier>.sig` so the matrix labels are strain names; `masking_table`,
+# `multiz_fold` and `phase_e_consensus` all iterate a collection reading identifiers the same way.
+# If a collection input arrives as a directory of identifier-named files, those ports are ordinary
+# work. If it does not, each needs the Collapse-Collection restructuring that `brc-masking-row`
+# already documents -- and guessing wrong means a tool that RUNS and mislabels its output, which is
+# the failure this project keeps paying for.
+#
+# ⚠ EVERY COMMAND IS GUARDED AND THE JOB ALWAYS SUCCEEDS, because the informative run is the one
+# where the path is not what was expected.
+class: GalaxyUserTool
+id: brc-collection-probe
+version: "0.1.0"
+name: UDT collection-input probe (BRC)
+description: Report what a data_collection input renders to inside a UDT job, and whether element identifiers survive
+container: quay.io/biocontainers/python:3.12
+shell_command: |
+  {
+    echo "=== rendered value of the collection input"
+    echo "path: [$(inputs.sigs.path)]"
+    echo
+    echo "=== is it a file or a directory?"
+    ls -ld '$(inputs.sigs.path)' 2>&1 || true
+    echo
+    echo "=== if a directory, what is in it (identifiers survive iff filenames carry them)"
+    ls -laR '$(inputs.sigs.path)' 2>&1 | head -60 || true
+    echo
+    echo "=== if a file, what does it start with"
+    head -c 300 '$(inputs.sigs.path)' 2>&1 || true
+    echo
+    echo "=== working directory, for the staging Galaxy did"
+    ls -laR . 2>&1 | head -40 || true
+  } > collection_probe.txt 2>&1
+inputs:
+  - name: sigs
+    type: data_collection
+    collection_type: list
+    label: any list collection
+    help: Not read for content. The question is what its path renders to and whether identifiers survive.
+outputs:
+  - name: report
+    type: data
+    format: txt
+    from_work_dir: collection_probe.txt
+    label: collection input report
+help:
+  format: markdown
+  content: |
+    Answers one question: **what does a `data_collection` input look like from inside a UDT job?**
+
+    Read the report for two things. First, whether `$(inputs.sigs.path)` is a directory or a single
+    file. Second, and the one that matters, whether anything in it carries the collection's ELEMENT
+    IDENTIFIERS — `PvP01`, `cs10` — or only Galaxy's `dataset_<uuid>.dat` names.
+
+    ⚠ **If only uuids survive, a whole class of ports is blocked as written**, and the workaround is
+    the one `brc-masking-row` records: let Galaxy attach identifiers with Collapse Collection rather
+    than expecting the job to know them.

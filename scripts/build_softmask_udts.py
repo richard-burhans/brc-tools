@@ -166,6 +166,10 @@ HAND_WRITTEN_UDTS = frozenset({
     # "No GPU device found!" and its immediate rerun succeeded -- a difference the job's own stderr
     # cannot explain and, without admin-visible job metrics, nothing else here can either.
     "gpu_probe.gxtool.yml",
+    # Asks what a `data_collection` input renders to inside a UDT job, and whether element
+    # identifiers survive into it. That answer gates the sourmash, masking_table, multiz_fold and
+    # phase_e_consensus ports, all of which iterate a collection reading identifiers.
+    "collection_probe.gxtool.yml",
 })
 
 #: Command fragments this file hardcodes, and the wrapper each is copied from.
