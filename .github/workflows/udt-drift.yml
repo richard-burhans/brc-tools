@@ -7,9 +7,9 @@ name: udt-drift
 on:
   push:
     branches: [main]
-    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py', 'scripts/check_udt_provenance.py']
+    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py', 'scripts/check_udt_provenance.py', 'scripts/build_inventory_udts.py']
   pull_request:
-    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py', 'scripts/check_udt_provenance.py']
+    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py', 'scripts/check_udt_provenance.py', 'scripts/build_inventory_udts.py']
 
 jobs:
   drift:
@@ -32,3 +32,8 @@ jobs:
       # changes the container a UDT pins while leaving the tool XML byte-identical.
       - name: Converted UDTs match their source wrappers
         run: python3 scripts/check_udt_provenance.py
+
+      # The WF-A bookkeeping UDTs inline their Python from tools/ verbatim; this is what stops the
+      # inlined copy and the wrapper's own helper from drifting apart.
+      - name: Inventory UDTs match their helpers
+        run: python3 scripts/build_inventory_udts.py --check
