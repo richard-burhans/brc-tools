@@ -1,0 +1,210 @@
+<?xml version="1.0"?>
+<tool id="cyclospora_build_sheet" name="Cyclospora HDS sheet" version="@TOOL_VERSION@+galaxy@VERSION_SUFFIX@" profile="@PROFILE@">
+    <description>collect per-specimen Cyclospora haplotype calls into one CDC wide sheet</description>
+    <macros>
+        <import>macros.xml</import>
+    </macros>
+    <expand macro="requirements"/>
+    <required_files>
+        <include path="build_hds_sheet.py"/>
+    </required_files>
+    <version_command><![CDATA[python '$__tool_directory__/build_hds_sheet.py' --help | head -1]]></version_command>
+    <command detect_errors="aggressive"><![CDATA[
+## The image runs with contain / cleanenv / no-mount tmp, so /tmp is read-only on
+## a compute node and TMPDIR is empty. Give it a home inside the job directory.
+mkdir -p wrk calls && export TMPDIR="\$(pwd)/wrk" &&
+
+## Galaxy stores every dataset as dataset_<n>.dat, which destroys the specimen id
+## for any caller TSV that does not carry one in a column. Stage the collection
+## into calls/ under its element identifier so the builder's filename fallback can
+## still recover the specimen. Non-portable characters are folded to '_'; a
+## collision therefore makes `ln -s` fail loudly rather than silently drop a file.
+#import re
+#for $c in $calls
+ln -s '$c' 'calls/${re.sub("[^A-Za-z0-9_.-]", "_", str($c.element_identifier))}.tsv' &&
+#end for
+
+python '$__tool_directory__/build_hds_sheet.py'
+    --calls calls
+    --out '$sheet'
+#if $specimens
+    --specimens '$specimens'
+#end if
+$drop_novel
+#if $emit_summary
+    --summary '$summary'
+#end if
+    ]]></command>
+    <inputs>
+        <param name="calls" type="data_collection" collection_type="list" format="tabular"
+               label="Per-specimen haplotype call TSVs"
+               help="A 'list' collection of caller output: the long TSV from Cyclospora PART haplotypes, the TSV from Cyclospora Mt-Junction, or both for the same specimens. The file TYPE is detected from its header, never from its name. The specimen id comes from the file's own 'specimen' column when there is one, and otherwise from the element identifier - so name elements after the specimen, and run the junction caller with its 'Emit specimen column' option on."/>
+        <param argument="--specimens" name="specimens" type="data" format="txt,tabular" optional="true"
+               label="Specimen list (optional)"
+               help="One specimen id per line. Fixes the row order and, crucially, FORCES a row for a specimen that produced no calls at all - which is how a whole-specimen failure enters the sheet as an all-empty row rather than vanishing. Without it, rows are the specimens actually seen, sorted. Ids present in the collection but absent from this list are dropped with a warning on stderr."/>
+        <param argument="--drop-novel" name="drop_novel" type="boolean" checked="false"
+               truevalue="--drop-novel" falsevalue=""
+               label="Keep only named reference haplotypes"
+               help="Discard haplotypes that did not match a named reference (the '&lt;PART&gt;_NOV_&lt;md5&gt;' and junction NOVEL columns). Off by default: novel haplotypes carry real discriminating signal, and the pre-registered analysis keeps them. Turning this on reproduces the 'knownonly' sheets."/>
+        <param name="emit_summary" type="boolean" checked="false" truevalue="yes" falsevalue=""
+               label="Also emit the per-specimen audit table"
+               help="Per specimen: how many haplotypes, how many locus blocks were called, and which came out empty. The sheet format cannot distinguish 'amplicon dropped out' from 'locus was called but no haplotype cleared the gates' - both are an empty block. This table is what makes that auditable."/>
+    </inputs>
+    <outputs>
+        <data name="sheet" format="tabular" label="${tool.name} on ${on_string}: CDC HDS sheet"/>
+        <data name="summary" format="tabular" label="${tool.name} on ${on_string}: locus block audit">
+            <filter>emit_summary</filter>
+        </data>
+    </outputs>
+    <tests>
+        <!-- 1. One specimen, both caller types. Exercises both header parsers and
+             the union of a PART call with a junction call in one row. -->
+        <test expect_num_outputs="1">
+            <param name="calls">
+                <collection type="list">
+                    <element name="TEST_parts" value="calls_parts.tsv" ftype="tabular"/>
+                    <element name="TEST_junction" value="calls_junction.tsv" ftype="tabular"/>
+                </collection>
+            </param>
+            <output name="sheet" file="expected_sheet.tabular" ftype="tabular" compare="diff"/>
+        </test>
+        <!-- 2. The same calls plus a specimen list naming a specimen with no calls.
+             TEST_DROPOUT must appear as a row of empty cells: an entirely empty
+             locus block IS the sheet's encoding of "not called", and PyEuk's
+             dropout handling keys off it. A placeholder here would be a bug. -->
+        <test expect_num_outputs="2">
+            <param name="calls">
+                <collection type="list">
+                    <element name="TEST_parts" value="calls_parts.tsv" ftype="tabular"/>
+                    <element name="TEST_junction" value="calls_junction.tsv" ftype="tabular"/>
+                </collection>
+            </param>
+            <param name="specimens" value="specimens.txt" ftype="txt"/>
+            <param name="emit_summary" value="true"/>
+            <output name="sheet" file="expected_sheet_specimens.tabular" ftype="tabular" compare="diff">
+                <assert_contents>
+                    <has_n_columns n="3"/>
+                    <has_n_lines n="3"/>
+                    <has_line line="Seq_ID&#9;Mt_Cmt214.A_Junction_Hap_20&#9;Nu_CDS2_PART_A_Hap_1"/>
+                    <has_line line="TEST&#9;X&#9;X"/>
+                    <has_line line="TEST_DROPOUT&#9;&#9;"/>
+                </assert_contents>
+            </output>
+            <output name="summary" file="expected_summary.tabular" ftype="tabular" compare="diff">
+                <assert_contents>
+                    <has_line line="TEST&#9;2&#9;2&#9;0&#9;-"/>
+                    <has_line line="TEST_DROPOUT&#9;0&#9;0&#9;2&#9;Mt_Junction,Nu_CDS2_PART_A"/>
+                </assert_contents>
+            </output>
+        </test>
+        <!-- 3. Dropping novel haplotypes. Neither test haplotype is novel, so the
+             sheet is unchanged; this pins that the flag does not disturb known calls. -->
+        <test expect_num_outputs="1">
+            <param name="calls">
+                <collection type="list">
+                    <element name="TEST_parts" value="calls_parts.tsv" ftype="tabular"/>
+                    <element name="TEST_junction" value="calls_junction.tsv" ftype="tabular"/>
+                </collection>
+            </param>
+            <param name="drop_novel" value="true"/>
+            <output name="sheet" file="expected_sheet.tabular" ftype="tabular" compare="diff"/>
+        </test>
+    </tests>
+    <help format="markdown"><![CDATA[
+**Cyclospora HDS sheet** — stage 6 of the *Cyclospora cayetanensis* LoFreq/PyEuk
+typing arm. It collects the per-specimen call TSVs written by
+*Cyclospora PART haplotypes* and *Cyclospora Mt-Junction* into the single wide
+haplotype data sheet (HDS) that PyEuk consumes.
+
+-----
+
+## The sheet format has three states, and the third is the subtle one
+
+```
+Seq_ID   Hap_1   Hap_2   Hap_3 ...
+SPEC_A   X               X
+SPEC_B           X
+```
+
+| cell | meaning |
+|---|---|
+| `X` | haplotype **present** in that specimen |
+| empty | haplotype **absent**, at a locus that **was** called |
+| **every column of one locus empty** | that locus was **NOT CALLED** — amplicon dropout |
+
+There is no separate missing-data code. The entirely empty locus block *is* the
+code, and PyEuk's dropout handling keys off it. This is why the upstream callers
+must emit no rows at all for a locus that failed its coverage gate, and why this
+tool never writes a placeholder into an empty block.
+
+The format has one irreducible ambiguity, inherited from CDC: a locus that *was*
+sequenced deeply enough to call, but whose candidate haplotypes all failed the
+frequency/read gates, also produces an empty block and is indistinguishable from
+dropout. Turn on **the per-specimen audit table** to see how many blocks came out
+empty for each specimen; the PART caller's own summary output resolves which of
+the two it was, because it reports the actual spanning depth.
+
+-----
+
+## Inputs
+
+- **Per-specimen haplotype call TSVs** — a `list` collection. Elements may be
+  PART-caller output, junction-caller output, or both; mixing them in one
+  collection is the normal case. Each file's type is decided by its header line,
+  not its name, and a file that is neither is skipped with a warning.
+
+- **Specimen list** *(optional)* — one id per line. Two effects, both worth
+  having in a production run: it fixes the row order, and it forces a row for a
+  specimen that produced no calls whatsoever, so a specimen that failed outright
+  is visible in the sheet as an all-empty row instead of silently disappearing.
+
+- **Keep only named reference haplotypes** *(optional)* — drops
+  `<PART>_NOV_<md5>` and novel junction columns. Off by default.
+
+## Outputs
+
+- **CDC HDS sheet** (tabular) — `Seq_ID` then one column per haplotype, columns
+  sorted, `X` for present.
+- **Locus block audit** (tabular, optional) — `specimen`, `n_haplotypes`,
+  `n_loci_called`, `n_loci_empty`, `empty_loci`.
+
+-----
+
+## Where the specimen id comes from
+
+Galaxy names every dataset `dataset_<n>.dat`, so a filename is not a specimen id
+here. In order of preference:
+
+1. the file's own `specimen` column — PART-caller output always has one, and the
+   junction caller writes one when run with **Emit specimen column** on. **Use
+   this.** The column wins over everything else.
+2. otherwise, the **element identifier** of the collection element, which this
+   tool stages onto disk as `<identifier>.tsv` before reading.
+
+So: name collection elements after the specimen, and switch the junction caller's
+specimen column on. A file that mixes two specimen ids in its `specimen` column
+is rejected rather than merged.
+
+-----
+
+## No reference data is needed here, on purpose
+
+`markers.fa`, `parts.bed`, `haplotypes78.fa` and `junction.fa` are **not** inputs
+to this tool and are not bundled with it. Haplotype naming — the only step that
+consults a reference — happens upstream in the callers, which is where those
+files belong. By the time calls reach this tool, every haplotype already carries
+its final name, and the sheet is pure aggregation over those names. Giving this
+step a reference input would create a way for the sheet to disagree with the
+calls it was built from, for no gain.
+
+The only file bundled with the wrapper is `build_hds_sheet.py` itself, via
+`required_files`.
+
+-----
+
+Ported from `pyeuk-bench/lofreq_arm/build_sheets.py`, extended to read
+per-specimen files and to carry the Mt-Junction locus. Reproduces the reference
+sheets byte for byte; see `tools/cyclospora/VALIDATION.md`.
+    ]]></help>
+    <expand macro="citations"/>
+</tool>

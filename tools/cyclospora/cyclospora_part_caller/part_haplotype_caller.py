@@ -1,0 +1,1 @@
+../scripts/part_haplotype_caller.py
