@@ -1,0 +1,101 @@
+# A diagnostic UDT, not a tool anybody runs for its output.
+#
+# WHY IT EXISTS. A converter has to decide, for every `$NAME` left in a converted
+# command, whether the UDT job container will supply a value or silently expand it to the empty
+# string. That is a property of the platform, not of the wrapper, and it cannot be read off the XML.
+# This asks the container directly.
+#
+# ⚠ WRITE EVERY VARIABLE BARE. `${NAME}` is NOT equivalent here -- Galaxy claims the brace form for
+# its own templating, and a `shell_command` containing one fails with "Error occurred while building
+# command line for tool", BOTH job streams empty, no indication of which variable was at fault. The
+# first version of this probe used braces throughout and failed exactly that way; `$NAME` works.
+#
+# ⚠ THE CONTROL MATTERS AS MUCH AS THE PROBE. `$(inputs.input.path)` is echoed first. If it renders
+# a real path, Galaxy's templating is live and an empty variable below is a TRUE absence. If it does
+# not render, the run says nothing about the environment and only that the tool is misregistered.
+# Without the control an empty result has two explanations and no way to tell them apart.
+#
+#   python3 scripts/udt_deploy.py udt/env_probe.gxtool.yml --smoke-fasta <any small file>
+#
+# MEASURED ON usegalaxy.org, 2026-08-28 (job 79420986, container python:3.12 via Apptainer):
+#
+#   exported    GALAXY_SLOTS=1   GALAXY_MEMORY_MB=3788   GALAXY_MEMORY_MB_PER_SLOT=3788
+#               TMPDIR  TMP  TEMP  HOME  PWD  PATH  LANG=C.UTF-8  LC_ALL=C.UTF-8
+#               _GALAXY_JOB_TMP_DIR  _GALAXY_JOB_HOME_DIR  (+ Apptainer/Singularity bookkeeping)
+#   NOT in printenv
+#               USER -- and `$USER` expands EMPTY
+#               SHELL -- but `$SHELL` reads /bin/bash, supplied by the invoking bash rather than by
+#                        Galaxy, so it is not a platform guarantee. Do not rely on it.
+#   nproc       1, consistent with GALAXY_SLOTS
+#
+# So `-T$GALAXY_SLOTS` IS viable in a UDT -- but `-T${GALAXY_SLOTS:-4}`, which is what
+# tools/fastan and tools/toga2 write, is not, and the `:-default` cannot survive the rewrite.
+class: GalaxyUserTool
+id: brc-udt-env-probe
+version: "0.2.0"
+name: UDT environment probe (BRC)
+description: Report which variables a UDT job container exports, to decide how wrappers reading them must be ported
+container: quay.io/biocontainers/python:3.12
+shell_command: |
+  {
+    echo "=== CONTROL: templating is live if this is a real path ==="
+    echo "inputs.input.path -> [$(inputs.input.path)]"
+    echo
+
+    echo "=== PROBE: variables wrappers in this repo actually read ==="
+    echo "GALAXY_SLOTS=[$GALAXY_SLOTS]"
+    echo "GALAXY_MEMORY_MB=[$GALAXY_MEMORY_MB]"
+    echo "GALAXY_MEMORY_MB_PER_SLOT=[$GALAXY_MEMORY_MB_PER_SLOT]"
+    echo
+
+    echo "=== the variables a converted shell_command may rely on ==="
+    echo "TMPDIR=[$TMPDIR]"
+    echo "HOME=[$HOME]"
+    echo "PWD=[$PWD]"
+    echo "PATH=[$PATH]"
+    echo "LANG=[$LANG]"
+    echo "LC_ALL=[$LC_ALL]"
+    echo
+
+    echo "=== deliberately NOT on the allowlist ==="
+    echo "USER=[$USER]                 <- expect empty: not exported"
+    echo "SHELL=[$SHELL]               <- may read /bin/bash, but from bash, not Galaxy"
+    echo
+
+    echo "=== cores actually visible to the container ==="
+    echo "nproc: [`nproc 2>/dev/null || echo unavailable`]"
+    echo
+
+    echo "=== full environment, sorted ==="
+    printenv | sort
+  } > env_probe.txt 2>&1
+inputs:
+  - name: input
+    type: data
+    format: data
+    label: Any small dataset
+    help: >-
+      Content is never read. A UDT with no data input fails before it reaches a node, with no stderr
+      to read, so the probe needs one purely to get itself scheduled.
+outputs:
+  - name: report
+    type: data
+    format: txt
+    from_work_dir: env_probe.txt
+    label: UDT container environment
+help:
+  format: markdown
+  content: |
+    Dumps the environment of a UDT job container, so that porting decisions rest on a measurement
+    rather than an assumption.
+
+    **What it settles.** Whether a variable a classic wrapper reads will have a value in a UDT.
+    Classic wrappers get `$GALAXY_SLOTS` substituted by Cheetah before the command reaches a shell;
+    a UDT has no Cheetah, so the same text is an ordinary shell variable reference. If the container
+    did not export it, `tools/fastan`'s `-T$GALAXY_SLOTS` would quietly become `-T`.
+
+    **Read the control line first.** `inputs.input.path` must show a real path, or the run proves
+    nothing.
+
+    **Write variables bare.** `${NAME}` collides with Galaxy's own templating and fails the job
+    before it starts, with both streams empty.

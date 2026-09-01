@@ -1,0 +1,552 @@
+class: GalaxyWorkflow
+label: WF-B softmask (UDT edition, usegalaxy.org)
+doc: >-
+  The usegalaxy.org-runnable form of `softmask.gxwf.yml`: same masking logic, restructured for the
+  constraints a public Galaxy imposes. The local wrappers cannot be installed there, so each masker
+  is a User-Defined Tool; a UDT gets one container and the masker images carry no python3, so every
+  masker is two steps. `samtools_faidx` is not installed on usegalaxy.org at all, so `faidx` is a
+  UDT too. The `uppercase` step exists because `maskfasta -soft` was being applied to assemblies
+  that already carried a mask.
+
+  ⛔ Every one of those decisions is recorded, with the measurement behind it, in the `doc:` of the
+  step it applies to and in the `help:` of the UDT it produced. Read those rather than guessing --
+  several look arbitrary and none are. `udt/` holds the tool definitions and
+  `scripts/build_softmask_udts.py` generates them from `tools/`.
+
+  ⚠ This file stays PORTABLE: plain tool ids, no uuids, no pinned toolshed revisions.
+  `scripts/run_softmask_udt.py` renders an instance-resolved copy at run time, because a UDT step
+  and a short toolshed id both import cleanly and then refuse at invoke.
+
+creator:
+  - class: Person
+    identifier: https://orcid.org/0000-0002-5987-8032
+    name: Anton Nekrutenko
+  - class: Person
+    identifier: https://orcid.org/0009-0006-5949-0958
+    name: Richard Burhans
+  - class: Person
+    name: Claude Opus 5
+license: MIT
+release: "0.1"
+
+inputs:
+  assemblies:
+    type: collection
+    collection_type: list
+    doc: Per-strain assembly FASTAs. Element identifier = strain. Every step maps over this.
+    position: {top: 400, left: 0}
+
+outputs:
+  softmasked_fasta:
+    outputSource: maskfasta/output
+    doc: Per-strain soft-masked FASTAs (union of the three maskers, lower-cased).
+  fasta_index:
+    outputSource: faidx/output
+    doc: Per-strain .fai indexes for the soft-masked FASTAs.
+  sizes:
+    outputSource: faidx/sizes
+    doc: >-
+      Per-strain chrom/length tables (`chrom<TAB>length`), the bedtools genome file -- and the
+      collection WF-C takes as its `sizes` input.
+
+      ⚠ DECLARED AS AN OUTPUT BECAUSE WF-C CANNOT COMPOSE WITHOUT IT. `brc-samtools-faidx` has
+      always emitted this beside the .fai, but it was not a workflow output, so a WF-B run left it
+      as an unlabelled step result in the history. Feeding WF-C then meant hunting a collection by
+      its rendered name ("chrom/length table") among two candidates that differ only in which faidx
+      step produced them -- done once by hand here, on run 19581fd094b2dfdd, which is exactly the
+      kind of step that is easy to get silently wrong. Lengths do not depend on masking, so this and
+      `faidx_ref/sizes` agree; this one is published because it is the index OF the FASTA WF-C
+      aligns.
+  dustmasker_bed:
+    outputSource: dustmasker_classify/output
+    doc: dustmasker low-complexity BED6 (UCSC-hub track).
+  windowmasker_bed:
+    outputSource: windowmasker_classify/output
+    doc: windowmasker masked-interval BED6 (UCSC-hub track).
+  tantan_bed:
+    outputSource: tantan_classify/output
+    doc: tantan low-complexity BED6 (UCSC-hub track).
+  fastan_bed:
+    outputSource: fastan_bed/output
+    doc: fastan tandem-array BED6 (UCSC-hub track).
+  mask_union:
+    outputSource: merge_bed/output
+    doc: >-
+      The merged union of all four maskers -- the mask itself, as intervals. Published because it is
+      what makes `softmasked_fasta` CHECKABLE: its covered bases must equal that FASTA's lowercase
+      count exactly, and the two are derived from different files by different tools.
+      `scripts/verify_softmask_outputs.py` is that check.
+  masking_table:
+    outputSource: masking_header/output
+    doc: >-
+      Sample x masker table of % genome masked, one row per strain. Reassembled from the per-strain
+      rows rather than produced in one job -- see `masking_row`.
+  masking_report:
+    outputSource: masking_multiqc/html_report
+    doc: MultiQC report rendering the masking table (custom content, table).
+  uppercased_fasta:
+    outputSource: uppercase/output
+    doc: >-
+      The uppercased assemblies every masker and `maskfasta` actually saw. Published so the mask can
+      be verified against the sequence it was applied to rather than against the original, which may
+      have arrived carrying a mask of its own (PvP01 in this repo's own captured WF-B run does exactly
+      that -- invocation 75ed0631e40c6c7b, workflows/examples/wf_b_examples.json: its 880-base input
+      peek is 75.9% lower-case, the same peek of the published maskfasta output is 91.6%, and
+      comparing the two position by position gives 0 reverted and 138 newly masked. That run's own
+      masking_table puts WF-B's union for PvP01 at 39.01% genome-wide, so the FASTA it published
+      carried mostly the mask the assembly arrived with).
+
+steps:
+  # ---- strip any pre-existing mask ---------------------------------------------------------
+  uppercase:
+    tool_id: brc-fasta-uppercase
+    label: uppercase
+    position: {top: 400, left: 300}
+    doc: >-
+      ⛔ NOT redundant with the maskers' own internal uppercasing. Each masker uppercases its
+      private working copy, so the BED tracks were always computed on unmasked sequence. But
+      `maskfasta -soft` was applied to the ORIGINAL assembly, lowercasing the union intervals ON TOP
+      of whatever was already lowercase. ⚠ THIS PANEL IS SUCH A CASE, on evidence committed to this
+      repository: in the captured WF-B run (invocation 75ed0631e40c6c7b,
+      workflows/examples/wf_b_examples.json) PvP01's 880-base input peek is 75.9% lower-case and the
+      same peek of the published maskfasta output is 91.6%, with 0 positions reverted and 138 newly
+      masked -- while that run's masking_table puts this workflow's union for PvP01 at 39.01%
+      genome-wide. (The 75.9/91.6 pair is one peek, not a genome-wide figure; the union is the
+      genome-wide one.) The published softmasked FASTA was therefore the union of this workflow's
+      mask AND the one the assembly arrived with, with no way to tell them apart. Everything downstream now starts from uppercase.
+    in:
+      input: assemblies
+
+  faidx_ref:
+    tool_id: brc-samtools-faidx
+    label: faidx_ref
+    position: {top: 40, left: 640}
+    doc: >-
+      Index the UPPERCASED reference, purely to obtain the chrom/length table. ⚠ This exists to break
+      a circular dependency: `bedtools_sortbed`'s `genome_file_opts` conditional REQUIRES a genome
+      dataset in its `hist` case, but the only .fai the workflow otherwise produces comes from
+      `maskfasta`, which runs after the sort that needs it. Soft-masking does not change sequence
+      LENGTHS, so indexing the reference gives the identical table, earlier.
+    in:
+      input: uppercase/output
+
+  # ---- dustmasker -------------------------------------------------------------------------
+  dustmasker_bed3:
+    tool_id: brc-dustmasker-bed3
+    label: dustmasker_bed3
+    position: {top: 240, left: 640}
+    doc: NCBI DUST -> BED3 + the uppercased FASTA. Maps over the uppercased assemblies.
+    in:
+      input: uppercase/output
+  dustmasker_classify:
+    tool_id: brc-lc-classify
+    label: dustmasker_classify
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: dustmasker LC (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: DustMakser}
+    position: {top: 240, left: 980}
+    doc: Annotate the DUST intervals with repeat-unit signature and purity -> BED6.
+    in:
+      fasta: dustmasker_bed3/upper_fasta
+      intervals: dustmasker_bed3/intervals
+
+  # ---- windowmasker -----------------------------------------------------------------------
+  windowmasker_bed3:
+    tool_id: brc-windowmasker-bed3
+    label: windowmasker_bed3
+    position: {top: 460, left: 640}
+    doc: Two-pass WindowMasker -> BED3 + the uppercased FASTA. Maps over the uppercased assemblies.
+    in:
+      input: uppercase/output
+  windowmasker_classify:
+    tool_id: brc-lc-classify
+    label: windowmasker_classify
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: windowmasker repeats (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: WindowMasker}
+    position: {top: 460, left: 980}
+    in:
+      fasta: windowmasker_bed3/upper_fasta
+      intervals: windowmasker_bed3/intervals
+
+  # ---- tantan -----------------------------------------------------------------------------
+  tantan_bed3:
+    tool_id: brc-tantan-bed3
+    label: tantan_bed3
+    position: {top: 680, left: 640}
+    doc: tantan gentle LC -> BED3 + the uppercased FASTA. Maps over the uppercased assemblies.
+    in:
+      input: uppercase/output
+  tantan_classify:
+    tool_id: brc-lc-classify
+    label: tantan_classify
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: tantan LC (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: TanTan}
+    position: {top: 680, left: 980}
+    in:
+      fasta: tantan_bed3/upper_fasta
+      intervals: tantan_bed3/intervals
+
+  # ---- fastan (three stages: two conda packages, one container each) --------------------------
+  fastan_gdb:
+    tool_id: brc-fastan-gdb
+    label: fastan_gdb
+    position: {top: 900, left: 640}
+    doc: >-
+      FAtoGDB -> a tarred GDB. ⚠ A GDB is TWO files and one is hidden (`gdb.1gdb` + `.gdb.bps`), and
+      a Galaxy dataset is one file, so the pair travels as a tarball. Verified lossless.
+    in:
+      input: uppercase/output
+  fastan_scan:
+    tool_id: brc-fastan-scan
+    label: fastan_scan
+    position: {top: 900, left: 980}
+    doc: >-
+      FasTAN -m -p over the GDB. ⚠ `-m` REQUIRES a GDB -- FasTAN advertises FASTA input but refuses
+      it with masking on -- which is why fastan_gdb cannot be skipped.
+    in:
+      gdb: fastan_gdb/output
+  fastan_bed:
+    tool_id: brc-fastan-bed
+    label: fastan_bed
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'hub track: fastan tandem (BED6)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: fastan}
+    position: {top: 900, left: 1320}
+    doc: >-
+      ANOtoBED -> BED6. Needs fastga 1.5.20260729, NOT 1.5: released 1.5 cannot open a .1ano written
+      by fastan 0.8 (bioconda-recipes#68612). ANOtoBED does not read the GDB, so nothing else here
+      consumes the tarball.
+    in:
+      ano: fastan_scan/output
+
+  # ---- union ------------------------------------------------------------------------------
+  union_cat:
+    tool_id: cat1
+    label: union_cat
+    position: {top: 460, left: 1660}
+    doc: Concatenate the four per-strain BED6 sets (zipped by element identifier) before merge.
+    in:
+      input1: dustmasker_classify/output
+      queries_0|input2: windowmasker_classify/output
+      queries_1|input2: tantan_classify/output
+      queries_2|input2: fastan_bed/output
+    state:
+      queries:
+        - input2:
+            __class__: ConnectedValue
+        - input2:
+            __class__: ConnectedValue
+        - input2:
+            __class__: ConnectedValue
+  sort_bed:
+    tool_id: bedtools_sortbed
+    label: sort_bed
+    position: {top: 460, left: 1960}
+    doc: Sort the concatenated intervals (required before merge).
+    in:
+      input: union_cat/out_file1
+      genome_file_opts|genome: faidx_ref/sizes
+    state:
+      option: ''
+      genome_file_opts:
+        genome_file_opts_selector: hist
+  merge_bed:
+    tool_id: bedtools_mergebed
+    label: merge_bed
+    position: {top: 460, left: 2260}
+    doc: Merge overlapping intervals across all four maskers.
+    in:
+      input: sort_bed/output
+    # Every value below is the tool's OWN default, restated so the step is fully specified. It
+    # changes nothing about the merge; it is what lets the workflow be invoked through the API
+    # WITHOUT allow_tool_state_corrections, which does not correct anything -- it only downgrades
+    # Galaxy's refusal to a log.debug on the server that no response exposes.
+    state:
+      strand: ''                    # merge regardless of strand; these are unstranded mask tracks
+      distance: 0                   # only merge features that actually overlap or book-end
+      header: false
+      c_and_o_argument_repeat: []   # no column operations; we want plain merged intervals
+
+  # ---- apply the mask ---------------------------------------------------------------------
+  maskfasta:
+    tool_id: bedtools_maskfastabed
+    label: maskfasta
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'softmasked FASTA (-> WF-C masked_fastas / query_masked)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: SoftmaskedFasta}
+    position: {top: 300, left: 2580}
+    doc: >-
+      Soft-mask the UPPERCASED assembly at the merged union intervals (-soft), zipped by strain.
+      Reading `uppercase/output` rather than `assemblies` is what makes the result this workflow's
+      own mask instead of its union with whatever the assembly arrived carrying.
+    in:
+      fasta: uppercase/output
+      input: merge_bed/output
+    state:
+      soft: true
+      # ⚠ BOTH BELOW ARE THE TOOL'S DEFAULTS, AND ONE OF THEM MATTERS.
+      # `mc` is the hard-masking replacement character, inert under -soft, which lower-cases
+      # instead; restated only so the step is fully specified.
+      # `fullheader: false` is NOT inert. It makes bedtools truncate each header at the first
+      # whitespace token, which is exactly what the BED tracks carry -- so the masked FASTA and
+      # its own intervals agree by construction. Setting it true would silently break that
+      # correspondence, and verify_softmask_outputs compares the two.
+      mc: 'N'
+      fullheader: false
+  faidx:
+    tool_id: brc-samtools-faidx
+    label: faidx
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'softmasked FASTA index (.fai)'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: Softmaskedfai}
+    position: {top: 300, left: 2900}
+    doc: >-
+      Index the soft-masked FASTA. Replaces the original's `samtools_faidx` step, which cannot run
+      on usegalaxy.org, and its `Cut c1,c2` follow-up, whose output this emits directly.
+    in:
+      input: maskfasta/output
+
+  # ---- per-masker coverage ----------------------------------------------------------------
+  gcov_dust:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
+    label: gcov_dust
+    position: {top: 700, left: 2580}
+    doc: Genome coverage (max depth 1) of dustmasker intervals; maps over strains.
+    in:
+      input_type|input: dustmasker_classify/output
+      input_type|genome_file_opts|genome: faidx_ref/sizes
+    state:
+      input_type:
+        input_type_select: bed
+        genome_file_opts:
+          genome_file_opts_selector: hist
+      report:
+        report_select: hist
+        max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
+  gcov_window:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
+    label: gcov_window
+    position: {top: 880, left: 2580}
+    in:
+      input_type|input: windowmasker_classify/output
+      input_type|genome_file_opts|genome: faidx_ref/sizes
+    state:
+      input_type:
+        input_type_select: bed
+        genome_file_opts:
+          genome_file_opts_selector: hist
+      report:
+        report_select: hist
+        max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
+  gcov_tantan:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
+    label: gcov_tantan
+    position: {top: 1060, left: 2580}
+    in:
+      input_type|input: tantan_classify/output
+      input_type|genome_file_opts|genome: faidx_ref/sizes
+    state:
+      input_type:
+        input_type_select: bed
+        genome_file_opts:
+          genome_file_opts_selector: hist
+      report:
+        report_select: hist
+        max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
+  gcov_fastan:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
+    label: gcov_fastan
+    position: {top: 1240, left: 2580}
+    in:
+      input_type|input: fastan_bed/output
+      input_type|genome_file_opts|genome: faidx_ref/sizes
+    state:
+      input_type:
+        input_type_select: bed
+        genome_file_opts:
+          genome_file_opts_selector: hist
+      report:
+        report_select: hist
+        max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
+  gcov_union:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
+    label: gcov_union
+    position: {top: 1420, left: 2580}
+    doc: Genome coverage (max depth 1) of the merged union intervals; maps over strains.
+    in:
+      input_type|input: merge_bed/output
+      input_type|genome_file_opts|genome: faidx_ref/sizes
+    state:
+      input_type:
+        input_type_select: bed
+        genome_file_opts:
+          genome_file_opts_selector: hist
+      report:
+        report_select: hist
+        max: 1
+      # ⚠ Stated explicitly, not left to defaults. Galaxy reports every unset parameter as an
+      # "upgrade message" and REFUSES the invocation over it, so a state block that omits them
+      # imports fine and cannot run. These six are the tool's own defaults.
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
+
+  # ---- QC table ------------------------------------------------------------------------------
+  masking_row:
+    tool_id: brc-masking-row
+    label: masking_row
+    position: {top: 700, left: 2900}
+    doc: >-
+      ⛔ ONE JOB PER STRAIN, AND IT DOES NOT KNOW WHICH STRAIN. The classic `masking_table` consumes
+      five WHOLE collections and reads `$el.element_identifier` per element. The obvious port is to
+      map one job per strain reading `$(inputs["<name>|__identifier__"])` -- which WORKS through the
+      tool API and FAILS inside a workflow, dying with "Error occurred while building command line
+      for tool" and naming nothing. Measured both ways on the same tool and collection. So this
+      emits only the numbers and `collapse_rows` supplies the Sample column from Galaxy's own
+      element identifiers.
+    in:
+      dustmasker: gcov_dust/output
+      windowmasker: gcov_window/output
+      tantan: gcov_tantan/output
+      fastan: gcov_fastan/output
+      union: gcov_union/output
+  collapse_rows:
+    tool_id: toolshed.g2.bx.psu.edu/repos/nml/collapse_collections/collapse_dataset/5.1.0
+    label: collapse_rows
+    position: {top: 700, left: 3220}
+    doc: >-
+      Concatenate the per-strain rows AND supply the Sample column. `filename|add_name` with
+      `place_name: same_multiple` prepends each element's IDENTIFIER to its lines, which is the
+      strain name -- the thing `masking_row` cannot obtain for itself inside a workflow.
+
+      ⛔ THE CONDITIONAL FORM DIFFERS BY ROUTE, AND GETTING IT WRONG FAILS SILENTLY. In a gxformat2
+      `state:` it must be NESTED, as below. Through `/api/tools` the same conditional must instead be
+      FLAT pipe-separated keys (`filename|add_name`). Each form is ignored by the other route: the
+      tool still runs and exits 0, and simply prepends nothing -- which then surfaces far downstream
+      as MultiQC's "Inconsistent number of columns", six header fields against five data fields,
+      with nothing pointing back here.
+    in:
+      input_list: masking_row/output
+    state:
+      one_header: false
+      filename:
+        add_name: true
+        place_name: same_multiple
+  masking_header:
+    tool_id: brc-masking-header
+    label: masking_header
+    position: {top: 700, left: 3540}
+    doc: >-
+      Prepend the `Sample<TAB>dustmasker<TAB>...` header. Neither neighbour can: `masking_row` runs
+      per strain so its header would repeat, and `collapse_rows` has just overwritten the first cell
+      of every line with the strain name.
+    in:
+      rows: collapse_rows/output
+
+  masking_multiqc:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/multiqc/multiqc/1.35+galaxy1
+    label: masking_multiqc
+    position: {top: 700, left: 3860}
+    doc: MultiQC report rendering the masking table (custom content, table).
+    in:
+      results_0|software_cond|input: masking_header/output
+    state:
+      results:
+        - software_cond:
+            software: custom_content
+            plot_type: table
+            section_name: "Soft-masking proportions"
+            title: "Per-strain % genome masked"
+            description: "Percent of each genome soft-masked by dustmasker, windowmasker, tantan, fastan, and their union (bedtools genomecov)."
+            # A table has no axes; these are the linegraph fields, and MultiQC ignores them here.
+            # They are named anyway because Galaxy counts an unset OPTIONAL parameter as an upgrade
+            # message exactly like a required one.
+            xlab: null
+            ylab: null
+      # The tool's own defaults, restated for the same reason as merge_bed above. The report's
+      # title and comment live in the custom-content section, not in these top-level fields.
+      # ⚠ A DATA PARAMETER, AND IT STILL HAS TO BE NAMED. `image_content_input` is an optional
+      # data input used only by the `image` plot type. Leaving it unconnected is not the same as
+      # leaving it unset: Galaxy raises an upgrade message for it either way, and an explicit null
+      # is what settles it. This was the last of the three that kept the workflow needing
+      # allow_tool_state_corrections, and the one an audit of non-data parameters cannot see.
+      image_content_input: null
+      title: ''
+      comment: ''
+      flat: false
+      export: false
+      png_plots: false

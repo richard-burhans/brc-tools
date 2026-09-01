@@ -1,0 +1,26 @@
+name: udt-drift
+
+# Keep udt/ in sync with the wrappers under tools/. The check is STANDARD LIBRARY ONLY -- there is
+# no `pip install` step here, unlike pipeline-dataflow.yml which needs pyyaml -- because a generated
+# file going stale must be noticed by CI even when the generator's own toolchain is not present.
+on:
+  push:
+    branches: [main]
+    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py']
+  pull_request:
+    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py']
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Regenerate every UDT and compare against the committed copy. The same command also reports
+      # ORPHANS -- a file in udt/ that build() no longer produces -- which a generated-side
+      # comparison cannot see on its own.
+      - name: UDTs match their generator
+        run: python3 scripts/build_softmask_udts.py --check
