@@ -230,6 +230,13 @@ IWC submission is queued behind it. The ToolShed copies already pin
 `<requirement type="package" version="0.6.0">pyeuk</requirement>`, so they will work the
 day it lands and not before.
 
+## The workflow that runs it
+
+`workflows/HAPLOTYPE_TYPING_0.6.0.md` in this repository describes the deployed Galaxy
+workflow: its seven steps, every tool version, which parameters are exposed and which are
+pinned, what does not transfer to a new cohort, and how to import it while the API key is
+dead.
+
 ## How to check any line in this document
 
 ```bash
