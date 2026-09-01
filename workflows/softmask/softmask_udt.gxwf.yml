@@ -43,6 +43,20 @@ outputs:
   fasta_index:
     outputSource: faidx/output
     doc: Per-strain .fai indexes for the soft-masked FASTAs.
+  sizes:
+    outputSource: faidx/sizes
+    doc: >-
+      Per-strain chrom/length tables (`chrom<TAB>length`), the bedtools genome file -- and the
+      collection WF-C takes as its `sizes` input.
+
+      ⚠ DECLARED AS AN OUTPUT BECAUSE WF-C CANNOT COMPOSE WITHOUT IT. `brc-samtools-faidx` has
+      always emitted this beside the .fai, but it was not a workflow output, so a WF-B run left it
+      as an unlabelled step result in the history. Feeding WF-C then meant hunting a collection by
+      its rendered name ("chrom/length table") among two candidates that differ only in which faidx
+      step produced them -- done once by hand here, on run 19581fd094b2dfdd, which is exactly the
+      kind of step that is easy to get silently wrong. Lengths do not depend on masking, so this and
+      `faidx_ref/sizes` agree; this one is published because it is the index OF the FASTA WF-C
+      aligns.
   dustmasker_bed:
     outputSource: dustmasker_classify/output
     doc: dustmasker low-complexity BED6 (UCSC-hub track).
