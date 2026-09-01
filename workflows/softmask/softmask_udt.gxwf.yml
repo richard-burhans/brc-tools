@@ -89,7 +89,12 @@ outputs:
     doc: >-
       The uppercased assemblies every masker and `maskfasta` actually saw. Published so the mask can
       be verified against the sequence it was applied to rather than against the original, which may
-      have arrived carrying a mask of its own (cs10 ships 46.8% soft-masked genome-wide (reports/repeat_and_masking_2026-08-27.md); on chromosome 1 that is 34.6% of all bases, or 47.8% of its non-N bases, the chromosome being 27.7% N).
+      have arrived carrying a mask of its own (PvP01 in this repo's own captured WF-B run does exactly
+      that -- invocation 75ed0631e40c6c7b, workflows/examples/wf_b_examples.json: its 880-base input
+      peek is 75.9% lower-case, the same peek of the published maskfasta output is 91.6%, and
+      comparing the two position by position gives 0 reverted and 138 newly masked. That run's own
+      masking_table puts WF-B's union for PvP01 at 39.01% genome-wide, so the FASTA it published
+      carried mostly the mask the assembly arrived with).
 
 steps:
   # ---- strip any pre-existing mask ---------------------------------------------------------
@@ -101,9 +106,14 @@ steps:
       ⛔ NOT redundant with the maskers' own internal uppercasing. Each masker uppercases its
       private working copy, so the BED tracks were always computed on unmasked sequence. But
       `maskfasta -soft` was applied to the ORIGINAL assembly, lowercasing the union intervals ON TOP
-      of whatever was already lowercase -- and cs10 ships 46.8% soft-masked genome-wide (reports/repeat_and_masking_2026-08-27.md); on chromosome 1 that is 34.6% of all bases, or 47.8% of its non-N bases, the chromosome being 27.7% N. The published
-      softmasked FASTA was therefore the union of this workflow's mask AND NCBI's, with no way to
-      tell them apart. Everything downstream now starts from uppercase.
+      of whatever was already lowercase. ⚠ THIS PANEL IS SUCH A CASE, on evidence committed to this
+      repository: in the captured WF-B run (invocation 75ed0631e40c6c7b,
+      workflows/examples/wf_b_examples.json) PvP01's 880-base input peek is 75.9% lower-case and the
+      same peek of the published maskfasta output is 91.6%, with 0 positions reverted and 138 newly
+      masked -- while that run's masking_table puts this workflow's union for PvP01 at 39.01%
+      genome-wide. (The 75.9/91.6 pair is one peek, not a genome-wide figure; the union is the
+      genome-wide one.) The published softmasked FASTA was therefore the union of this workflow's
+      mask AND the one the assembly arrived with, with no way to tell them apart. Everything downstream now starts from uppercase.
     in:
       input: assemblies
 

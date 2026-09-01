@@ -1,6 +1,6 @@
 # A diagnostic UDT, not a tool anybody runs for its output.
 #
-# WHY IT EXISTS. `scripts/xml_to_udt.py` has to decide, for every `$NAME` left in a converted
+# WHY IT EXISTS. A converter has to decide, for every `$NAME` left in a converted
 # command, whether the UDT job container will supply a value or silently expand it to the empty
 # string. That is a property of the platform, not of the wrapper, and it cannot be read off the XML.
 # This asks the container directly.
@@ -48,7 +48,7 @@ shell_command: |
     echo "GALAXY_MEMORY_MB_PER_SLOT=[$GALAXY_MEMORY_MB_PER_SLOT]"
     echo
 
-    echo "=== the allowlist in xml_to_udt.py: SHELL_ENV_OK ==="
+    echo "=== the variables a converted shell_command may rely on ==="
     echo "TMPDIR=[$TMPDIR]"
     echo "HOME=[$HOME]"
     echo "PWD=[$PWD]"
