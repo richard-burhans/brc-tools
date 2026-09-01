@@ -13,6 +13,17 @@ rows (≤ 5 reads, ≤ 0.66 % relative), which change no call and no downstream 
 
 ---
 
+## 0. Reference data
+
+The three reference inputs (`markers.fa`, `parts.bed`, `haplotypes78.fa`) and the junction
+reference (`junction.fa`) are deposited at **[10.5281/zenodo.21924355](https://doi.org/10.5281/zenodo.21924355)**
+with SHA-256 checksums and a per-file provenance map. All four are byte-identical to CDC's
+published release, verified against the live repository at commit `5fbd865d`. Pin that DOI when
+citing what this workflow was run against; the copies under `tools/cyclospora/*/refs/` are the same
+bytes.
+
+---
+
 ## 1. Headline comparison
 
 | # | Quantity | Reference | Galaxy | Agree? |
