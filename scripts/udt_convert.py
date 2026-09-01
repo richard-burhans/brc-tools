@@ -90,11 +90,19 @@ def resolve_container(pkg: str, version: str, images: list[str]) -> str:
     this looks it up instead of formatting a string. Newest build wins; ties are broken by the
     listing's own order, which is lexical and therefore stable across runs.
     """
-    want = f"{pkg}:{version}--"
-    hits = sorted(n for n in images if n.startswith(want))
-    if not hits:
-        raise Refusal(f"no published biocontainer for {pkg}={version} (looked for {want}* in the depot)")
-    return f"quay.io/biocontainers/{hits[-1]}"
+    # ⚠ TWO TAG SHAPES, AND MISSING THE SECOND IS A FALSE REFUSAL. Most biocontainers carry a build
+    # suffix (`ucsc-chainstitchid:482--h0b57e2e_0`), but some are published under the bare
+    # version -- `python:3.12` is, and it is the image four of this repo's UDTs already use. A
+    # lookup that only matched `pkg:version--*` reported "no published biocontainer for
+    # python=3.12" for tools whose container is sitting in the depot, which is the same class of
+    # wrong answer that made xml_to_udt.py's refusals untrustworthy.
+    suffixed = sorted(n for n in images if n.startswith(f"{pkg}:{version}--"))
+    if suffixed:
+        return f"quay.io/biocontainers/{suffixed[-1]}"
+    if f"{pkg}:{version}" in images:
+        return f"quay.io/biocontainers/{pkg}:{version}"
+    raise Refusal(f"no published biocontainer for {pkg}={version} (looked for {pkg}:{version} and "
+                  f"{pkg}:{version}--* in the depot)")
 
 
 def command_text(doc) -> str:
