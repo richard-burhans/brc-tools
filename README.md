@@ -114,6 +114,23 @@ planemo test --biocontainers tools/<tool>/
 planemo workflow_lint workflows/<phase>/*.gxwf.yml
 ```
 
+## Related data
+
+The *P. vivax* codon and protein alignments referenced by this project's
+provenance are archived separately:
+
+> Nekrutenko, A. (2026). *Eight-way codon and protein alignments for Plasmodium
+> vivax core genes (Pv4 panel)* [Data set]. Zenodo.
+> [10.5281/zenodo.22256054](https://doi.org/10.5281/zenodo.22256054)
+
+**Those alignments were not produced by these workflows.** They come from the
+earlier v3 shell pipeline ([`nekrut/Pv4-pangenome`](https://github.com/nekrut/Pv4-pangenome)),
+whose orthology step used OrthoFinder over proteomes. The orthology step here
+(WF-E) instead builds orthogroups from reciprocal-best whole-genome alignment
+chains plus annotation projection, so the two orthogroup sets should be expected
+to differ. The deposit also carries the sourmash genome-similarity matrix and a
+UPGMA tree derived from it.
+
 ## Validation
 
 - **Tools:** all 33 pass `planemo test --biocontainers` (profile 26.0).
