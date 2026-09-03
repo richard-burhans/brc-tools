@@ -14,10 +14,19 @@
 # gap, not for an unknowable hash, and `planemo container_register` is the way to close it.
 # Splitting costs one extra workflow step and needs no new image today.
 #
-# ⚠ THE MASKER EMITS ITS UPPERCASED FASTA AS A SECOND OUTPUT, ON PURPOSE. lc_classify reads the
-# sequence to classify each interval, and it must read the SAME bases the masker saw -- same
-# decompression, same uppercasing. Feeding it the original assembly instead would usually agree and
-# would silently disagree wherever the two paths differ.
+# ⚠ THE MASKER USED TO EMIT ITS UPPERCASED FASTA AS A SECOND OUTPUT, and the reason was sound:
+# lc_classify reads the sequence to classify each interval, so it must read the SAME bases the
+# masker saw. Feeding it the ORIGINAL assembly would usually agree and would silently disagree
+# wherever the two paths differ -- different decompression, or a mask the masker had uppercased away.
+#
+# ⛔ THAT OUTPUT IS GONE, because the workflow gained `brc-fasta-uppercase` and the guard is now met
+# by a file it already holds. The invariant lc_classify actually needs is the identical CONCATENATED
+# SEQUENCE PER CHROMOSOME -- it joins `line.strip()` per record, so wrapping and trailing whitespace
+# cannot reach it -- and both paths uppercase every sequence line while touching no header, so they
+# produce it by construction rather than by coincidence. Keeping the output meant every masker wrote
+# a full second copy of an assembly that was ALREADY uppercase on arrival: three copies per genome,
+# ~2.4 GB on a 772 Mb genome and ~26 GB across an 11-genome panel, none of them read by anything.
+# `upper.fa` is still built inside the job, because the masker binaries read it.
 class: GalaxyUserTool
 id: brc-tantan-bed3
 version: "0.1.0"
@@ -58,13 +67,15 @@ outputs:
     format: bed
     from_work_dir: intervals.bed3
     label: masked intervals (BED3, unclassified)
-  - name: upper_fasta
-    type: data
-    format: fasta
-    from_work_dir: upper.fa
-    label: uppercased FASTA (feed to lc_classify alongside the intervals)
 help:
   format: markdown
   content: |
-    Stage 1 of a two-step port. Emits BED3 intervals plus the uppercased FASTA they index into.
-    Feed BOTH to `brc-lc-classify` to get the content-annotated BED6 the workflow expects.
+    Stage 1 of a two-step port. Emits BED3 intervals over the UPPERCASED sequence -- the job
+    uppercases its own working copy, so a soft-masked assembly is masked from scratch rather than
+    on top of the mask it arrived with.
+
+    Feed the intervals to `brc-lc-classify` to get the content-annotated BED6 the workflow expects,
+    together with an uppercased FASTA of the same assembly. In the workflow that is the
+    `brc-fasta-uppercase` step's output; run standalone, uppercase the assembly yourself. ⚠ Do NOT
+    hand `brc-lc-classify` a soft-masked assembly: it classifies each interval by reading the bases
+    under it, and lowercase bases are not the ones this tool measured.

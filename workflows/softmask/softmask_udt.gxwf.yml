@@ -153,7 +153,11 @@ steps:
     position: {top: 240, left: 980}
     doc: Annotate the DUST intervals with repeat-unit signature and purity -> BED6.
     in:
-      fasta: dustmasker_bed3/upper_fasta
+      # ⚠ THE WORKFLOW'S OWN UPPERCASED FASTA, not a copy re-emitted by the masker. Both
+      # paths uppercase every sequence line and touch no header, so the per-chromosome
+      # sequence lc_classify assembles is identical; the masker's copy was a full second
+      # copy of an already-uppercase assembly.
+      fasta: uppercase/output
       intervals: dustmasker_bed3/intervals
 
   # ---- windowmasker -----------------------------------------------------------------------
@@ -178,7 +182,11 @@ steps:
         action_arguments: {tags: WindowMasker}
     position: {top: 460, left: 980}
     in:
-      fasta: windowmasker_bed3/upper_fasta
+      # ⚠ THE WORKFLOW'S OWN UPPERCASED FASTA, not a copy re-emitted by the masker. Both
+      # paths uppercase every sequence line and touch no header, so the per-chromosome
+      # sequence lc_classify assembles is identical; the masker's copy was a full second
+      # copy of an already-uppercase assembly.
+      fasta: uppercase/output
       intervals: windowmasker_bed3/intervals
 
   # ---- tantan -----------------------------------------------------------------------------
@@ -203,7 +211,11 @@ steps:
         action_arguments: {tags: TanTan}
     position: {top: 680, left: 980}
     in:
-      fasta: tantan_bed3/upper_fasta
+      # ⚠ THE WORKFLOW'S OWN UPPERCASED FASTA, not a copy re-emitted by the masker. Both
+      # paths uppercase every sequence line and touch no header, so the per-chromosome
+      # sequence lc_classify assembles is identical; the masker's copy was a full second
+      # copy of an already-uppercase assembly.
+      fasta: uppercase/output
       intervals: tantan_bed3/intervals
 
   # ---- fastan (three stages: two conda packages, one container each) --------------------------

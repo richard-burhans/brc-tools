@@ -14,10 +14,19 @@
 # gap, not for an unknowable hash, and `planemo container_register` is the way to close it.
 # Splitting costs one extra workflow step and needs no new image today.
 #
-# ⚠ THE MASKER EMITS ITS UPPERCASED FASTA AS A SECOND OUTPUT, ON PURPOSE. lc_classify reads the
-# sequence to classify each interval, and it must read the SAME bases the masker saw -- same
-# decompression, same uppercasing. Feeding it the original assembly instead would usually agree and
-# would silently disagree wherever the two paths differ.
+# ⚠ THE MASKER USED TO EMIT ITS UPPERCASED FASTA AS A SECOND OUTPUT, and the reason was sound:
+# lc_classify reads the sequence to classify each interval, so it must read the SAME bases the
+# masker saw. Feeding it the ORIGINAL assembly would usually agree and would silently disagree
+# wherever the two paths differ -- different decompression, or a mask the masker had uppercased away.
+#
+# ⛔ THAT OUTPUT IS GONE, because the workflow gained `brc-fasta-uppercase` and the guard is now met
+# by a file it already holds. The invariant lc_classify actually needs is the identical CONCATENATED
+# SEQUENCE PER CHROMOSOME -- it joins `line.strip()` per record, so wrapping and trailing whitespace
+# cannot reach it -- and both paths uppercase every sequence line while touching no header, so they
+# produce it by construction rather than by coincidence. Keeping the output meant every masker wrote
+# a full second copy of an assembly that was ALREADY uppercase on arrival: three copies per genome,
+# ~2.4 GB on a 772 Mb genome and ~26 GB across an 11-genome panel, none of them read by anything.
+# `upper.fa` is still built inside the job, because the masker binaries read it.
 class: GalaxyUserTool
 id: brc-lc-classify
 version: "0.1.0"
@@ -111,7 +120,8 @@ inputs:
     type: data
     format: fasta
     label: Uppercased FASTA
-    help: the `upper_fasta` output of the matching stage-1 masker, NOT the original assembly
+    help: an UPPERCASED FASTA of the same assembly the masker read -- in the workflow, the
+      `brc-fasta-uppercase` step's output. NOT a soft-masked assembly.
   - name: intervals
     type: data
     format: bed

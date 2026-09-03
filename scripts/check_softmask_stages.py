@@ -156,16 +156,15 @@ def main() -> int:
         print(f"\nSTAGE 3  {masker}")
         j = run_udt(gi, h["id"], uuids[masker], {"input": {"src": "hda", "id": upper_id}})
         c.wait(j["jobs"][0]["id"], f"{masker} job")
-        # ⚠ Keyed on the OUTPUT NAME, not a substring of the label. The masker's second output is
-        # labelled "uppercased FASTA (feed to lc_classify alongside the intervals)", which also
-        # contains "interval" -- so matching the label made the choice depend on the order Galaxy
-        # happens to return outputs in, and a BED3 check could silently run against a FASTA.
+        # ⚠ Keyed on the OUTPUT NAME, not a substring of the label. This survives the masker
+        # growing a second output again: a label match would depend on the order Galaxy happens to
+        # return outputs in, and a BED3 check could silently run against something else.
         o = {x.get("output_name") or gi.datasets.show_dataset(x["id"])["name"]: x["id"]
              for x in j["outputs"]}
         try:
-            bed_id, fa_id = o["intervals"], o["upper_fasta"]
+            bed_id = o["intervals"]
         except KeyError:
-            c.check(f"{masker}: declares intervals + upper_fasta", False, f"got {sorted(o)}")
+            c.check(f"{masker}: declares intervals", False, f"got {sorted(o)}")
             c.die(f"{masker}: unexpected output names")
         bt = c.text(bed_id)
         rows = [line for line in bt.splitlines() if line.strip()]
@@ -174,12 +173,12 @@ def main() -> int:
                 "BED3 shape")
         c.check(f"{masker}: within bounds", bed_span(bt) <= r1,
                 f"{bed_span(bt):,} nt covered ({bed_span(bt)/r1:.1%})")
-        _, rf, lf = fasta_stats(c.text(fa_id))
-        c.check(f"{masker}: its FASTA is uppercase", lf == 0 and rf == r1, f"{rf:,} nt, {lf} lower")
+        # The masker no longer re-emits a FASTA; stage 1 already asserted `upper_id` carries no
+        # lowercase, and that is the file stage 4 hands to lc_classify.
 
         print(f"STAGE 4  brc-lc-classify on {masker}")
         j2 = run_udt(gi, h["id"], uuids["lc_classify"],
-                     {"fasta": {"src": "hda", "id": fa_id}, "intervals": {"src": "hda", "id": bed_id}})
+                     {"fasta": {"src": "hda", "id": upper_id}, "intervals": {"src": "hda", "id": bed_id}})
         c.wait(j2["jobs"][0]["id"], f"lc_classify({masker}) job")
         b6 = c.text(j2["outputs"][0]["id"])
         r6 = [line for line in b6.splitlines() if line.strip()]
