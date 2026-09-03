@@ -1,0 +1,194 @@
+class: GalaxyUserTool
+id: brc-anchor-prep
+version: "0.1.0"
+name: Anchor prep -> BED12 + isoforms (BRC UDT)
+description: Build the per-anchor protein-coding BED12 and gene/transcript table TOGA2 needs
+container: quay.io/biocontainers/gffread:0.12.7--h077b44d_6
+#
+# WHY THIS IS ONE TOOL AND NOT TWO. The masker UDTs are split because their biocontainer has no
+# python3 and lc_classify.py needs one. The same is true here -- measured: `python3`, `python` and
+# `perl` are all absent from the gffread image -- but awk IS present and supports match()/substr()
+# with RSTART/RLENGTH, which is everything build_anchor_inputs.py does. So the port stays a single
+# job instead of inheriting the split.
+#
+# ⛔ THIS IS A PORT AND MUST NOT CHANGE WHAT COMES OUT. Both outputs are verified byte-identical to
+# tools/anchor_prep/build_anchor_inputs.py on the tool's own test-data and on the real cs10 RefSeq
+# annotation (40,185 BED12 rows, 33,672 isoform rows). Where the original has a defect, this
+# REPORTS it and reproduces it; see the two warnings below.
+shell_command: |
+  cat > strand_filter.awk <<'BRC_AWK'
+  # ⛔ gffread ABORTS ON A STRAND IT CANNOT PARSE, AND TAKES THE WHOLE ANCHOR WITH IT. NCBI RefSeq
+  # GFF3s carry the organelles, and a trans-spliced mitochondrial gene (cs10: nad1 on NC_029855.1)
+  # has exons on both strands, so its features are written with strand `?`. Two such rows made
+  # gffread exit with "Error parsing strand (?)" and emit ZERO BED records for a 29,813-gene
+  # annotation -- a silent total loss, since an empty BED12 reads as "no protein-coding genes".
+  #
+  # ⚠ FILTERED ONCE AND USED FOR EVERY PASS. The BED12 and the isoforms table are only trustworthy
+  # because they come from ONE annotation; deriving them from different files would let their
+  # transcript ids disagree, which is the exact failure anchor_prep exists to prevent.
+  BEGIN { FS = "\t"; OFS = "\t" }
+  /^#/  { print; next }
+  NF < 7 { print; next }
+  $7 == "+" || $7 == "-" { print; next }
+  { dropped++; seqs[$1] = 1 }
+  END {
+      if (dropped > 0) {
+          s = ""
+          for (k in seqs) s = s (s == "" ? "" : ",") k
+          printf "anchor_prep: dropped %d feature(s) with an unparseable strand, on %s -- gffread " \
+                 "cannot read them and would emit nothing at all. Anchors are nuclear; organellar " \
+                 "trans-spliced genes do not belong in a TOGA2 reference.\n", dropped, s > "/dev/stderr"
+      }
+  }
+  BRC_AWK
+  cat > anchor_prep.awk <<'BRC_AWK'
+  # Reimplementation of tools/anchor_prep/build_anchor_inputs.py in awk, so the whole tool fits one
+  # container. Reads the GFF3 twice and the raw gffread BED12 once. Must match the Python byte for
+  # byte -- the two editions of WF-A would otherwise disagree about their own anchors.
+  #
+  # Invoked as:  awk -f anchor_prep.awk pass=1 in.gff3 pass=2 raw.bed12 pass=3 in.gff3
+  BEGIN { FS = "\t"; OFS = "\t"; npc = 0; niso = 0; n_kept = 0; n_in = 0
+          # ⛔ ALWAYS CREATE THE BED, EVEN EMPTY. awk only opens a redirect on first write, so a run
+          # that keeps no rows would leave no file at all -- and Galaxy's from_work_dir then fails
+          # with a missing-output error instead of an empty result. The Python opened it
+          # unconditionally; this matches that.
+          printf "" > out_bed }
+
+  # ---- pass 1: gene ids of protein_coding_gene / gene features -----------------------------------
+  # ⚠ Mirrors collect_protein_coding_genes EXACTLY, INCLUDING ITS `break`. The Python stops at the
+  # FIRST attribute starting with `ID=`, so an attribute block with two of them contributes only the
+  # first. Scanning them all would be more "correct" and would diverge.
+  pass == 1 && /^#/ { next }
+  pass == 1 {
+      if (NF < 9) next
+      if ($3 != "protein_coding_gene" && $3 != "gene") next
+      n = split($9, a, ";")
+      for (i = 1; i <= n; i++) {
+          if (substr(a[i], 1, 3) == "ID=") { pc[substr(a[i], 4)] = 1; npc++; gid_seen = substr(a[i], 4); break }
+      }
+      # ⚠ RECORDED FOR REPORTING ONLY -- IT CHANGES NO OUTPUT. `collect_protein_coding_genes` accepts
+      # feature type `protein_coding_gene` OR `gene`, and NCBI RefSeq writes plain `gene` with the
+      # biotype as an ATTRIBUTE, so on an NCBI annotation every gene qualifies and the "protein-coding"
+      # filter keeps lncRNA, snoRNA, tRNA, snRNA and rRNA too. Measured on cs10: 5,284 of 40,185 kept
+      # rows (13.1%) are non-coding, and TOGA2 would receive them as protein-coding references.
+      # A PORT MUST NOT QUIETLY CHANGE SEMANTICS, so the rows are kept exactly as the XML tool keeps
+      # them; what is added is that the job log now says so.
+      if (gid_seen != "" && match($9, /gene_biotype=[^;]+/))
+          biotype[gid_seen] = substr($9, RSTART + 13, RLENGTH - 13)
+      gid_seen = ""
+      next
+  }
+
+  # ---- pass 2: filter the raw BED12 and put the GENE id in the name column ------------------------
+  # ⛔ COLUMN 4 MUST BE THE GENE ID, NOT THE TRANSCRIPT ID. gffread --bed writes the transcript there
+  # and the gene as `geneID=` in a trailing attribute column; phase_c4_merge keys its reference gene
+  # set off column 4 and reconciles against clean-GFF GENE ids, so leaving the transcript id makes
+  # every gene surface as a spurious unprojected `.t1` row. That is brc-tools' own Finding F3.
+  pass == 2 {
+      if ($0 == "") next
+      n_in++
+      if (NF < 12) next
+      gid = ""
+      if (NF >= 13 && match($13, /geneID=[^;]+/)) gid = substr($13, RSTART + 7, RLENGTH - 7)
+      # ⚠ FALL BACK TO THE EXISTING BED NAME when there is no geneID= attribute, exactly as the
+      # Python does. Dropping the row instead would silently shrink the BED for annotations gffread
+      # describes differently.
+      if (gid == "") gid = $4
+      # ⚠ `not pc or gid in pc` -- an EMPTY gene set keeps everything. A GFF3 whose genes this parser
+      # did not recognise must not yield an empty BED12, which would read as "no protein-coding genes"
+      # rather than "the filter matched nothing".
+      if (npc == 0 || (gid in pc)) {
+          $4 = gid
+          line = $1
+          for (i = 2; i <= 12; i++) line = line OFS $i
+          print line > out_bed
+          n_kept++
+          if (gid in biotype) { bt_count[biotype[gid]]++; if (biotype[gid] != "protein_coding") n_noncoding++ }
+      }
+      next
+  }
+
+  # ---- pass 3: isoforms, gene<TAB>transcript from every mRNA -------------------------------------
+  pass == 3 && /^#/ { next }
+  pass == 3 {
+      if (NF < 9 || $3 != "mRNA") next
+      tx = ""; gene = ""
+      n = split($9, a, ";")
+      for (i = 1; i <= n; i++) {
+          if (substr(a[i], 1, 3) == "ID=") tx = substr(a[i], 4)
+          else if (substr(a[i], 1, 7) == "Parent=") gene = substr(a[i], 8)
+      }
+      if (tx != "" && gene != "") { niso++; iso[niso] = gene OFS tx }
+      next
+  }
+
+  END {
+      # ⚠ SORTED BY (gene, transcript), as the Python's `rows.sort()` does. An unsorted isoforms table
+      # is not wrong for TOGA2 but differs from the XML tool's output, and this port is only
+      # trustworthy if the two files are identical.
+      for (i = 1; i <= niso; i++) print iso[i] | "LC_ALL=C sort -k1,1 -k2,2 > " out_iso
+      close("LC_ALL=C sort -k1,1 -k2,2 > " out_iso)
+      printf "bed12: kept %d/%d  isoforms: %d\n", n_kept, n_in, niso > "/dev/stderr"
+      if (n_noncoding > 0) {
+          printf "⚠ %d of %d kept BED12 rows (%.1f%%) are NOT protein-coding:", \
+                 n_noncoding, n_kept, 100.0 * n_noncoding / n_kept > "/dev/stderr"
+          for (k in bt_count) if (k != "protein_coding") printf " %s=%d", k, bt_count[k] > "/dev/stderr"
+          printf "\n  The gene filter accepts feature type `gene` as protein-coding, and NCBI writes" \
+                 " the biotype as an attribute instead. This matches the XML tool exactly; it is" \
+                 " reported, not corrected, because a port that changes semantics is not a port.\n" \
+                 > "/dev/stderr"
+      }
+  }
+  BRC_AWK
+  set -o pipefail
+  awk -f strand_filter.awk '$(inputs.input.path)' > nuclear.gff3 &&
+  gffread --bed nuclear.gff3 -o raw.bed12 &&
+  awk -f anchor_prep.awk -v out_bed=anchor.bed12 -v out_iso=anchor.isoforms.tsv \
+      pass=1 nuclear.gff3 pass=2 raw.bed12 pass=3 nuclear.gff3
+inputs:
+  - name: input
+    type: data
+    format: gff3
+    label: Anchor annotation (GFF3)
+    help: >-
+      Chrom-reconciled GFF3 for ONE anchor. ⚠ Organellar features whose strand gffread cannot parse
+      are dropped first and the count is reported -- without that, two mitochondrial rows in an NCBI
+      RefSeq GFF3 abort gffread and the tool emits NOTHING for the whole annotation.
+outputs:
+  - name: bed12
+    type: data
+    format: bed12
+    from_work_dir: anchor.bed12
+    label: protein-coding BED12 (gene id in column 4)
+  - name: isoforms
+    type: data
+    format: tabular
+    from_work_dir: anchor.isoforms.tsv
+    label: gene/transcript isoforms table
+help:
+  format: markdown
+  content: |
+    Emits the two files TOGA2 needs for one anchor, from one GFF3 in one job — which is what
+    guarantees their transcript ids agree.
+
+    * **BED12**, protein-coding, with the **gene** id in column 4. gffread writes the *transcript*
+      there; `phase_c4_merge` keys its reference gene set off column 4 and reconciles against
+      clean-GFF gene ids, so leaving the transcript id makes every gene surface as a spurious
+      unprojected `.t1` row (brc-tools Finding F3).
+    * **Isoforms TSV**, `gene<TAB>transcript` from every mRNA, sorted.
+
+    ⛔ **Two mitochondrial rows can zero the whole anchor.** NCBI RefSeq GFF3s carry the organelles,
+    and a trans-spliced mitochondrial gene (cs10: `nad1` on `NC_029855.1`) has exons on both strands,
+    so its features carry strand `?`. gffread exits with *"Error parsing strand (?)"* and emits zero
+    BED records — for a 29,813-gene annotation. Those features are dropped before gffread and the
+    count is reported. Anchors are nuclear; organellar trans-spliced genes do not belong in a TOGA2
+    reference.
+
+    ⚠ **The protein-coding filter does not filter to protein-coding on an NCBI annotation, and this
+    tool reports that rather than fixing it.** The gene set accepts feature type `protein_coding_gene`
+    OR `gene`; NCBI writes plain `gene` with `gene_biotype=protein_coding` as an *attribute*, so
+    every gene qualifies. Measured on cs10: **5,284 of 40,185 kept rows (13.1%) are non-coding** —
+    lncRNA 3,082, snoRNA 1,595, tRNA 491, snRNA 99, rRNA 17 — and TOGA2 receives them as
+    protein-coding references. The job log now names the counts. It is reproduced rather than
+    corrected because a port that silently changes semantics is not a port; fixing it belongs in
+    `tools/anchor_prep/`, where both editions would inherit it.

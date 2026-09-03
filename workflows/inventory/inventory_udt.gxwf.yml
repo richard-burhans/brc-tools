@@ -1,0 +1,214 @@
+class: GalaxyWorkflow
+label: WF-A inventory (UDT edition)
+doc: >-
+  WF-A ported to run on usegalaxy.org. Six of the classic workflow's nine steps name tools that are
+  installed on the BRC instance and 404 on .org -- sourmash_sketch, sourmash_compare,
+  collection_self_pairs, collection_relabel_map, samtools_faidx and anchor_prep -- so the workflow
+  imports there and cannot be invoked. This edition addresses each of them with a User-Defined Tool
+  and leaves the three that already run (busco, multiqc, and the identifier extraction) as stock
+  tools.
+
+  ⛔ ONE CLASSIC OUTPUT IS NOT REPRODUCED, AND THAT IS A REAL GAP RATHER THAN AN OVERSIGHT. The
+  classic workflow publishes `signatures`, the per-strain sourmash .sig files, described in its own
+  port list as "BRC-reusable". `brc-sourmash-panel` performs the sketch and the compare in ONE job
+  and publishes only the similarity matrix and the two plots, so the individual signatures never
+  become datasets. Closing it means giving that UDT a collection output, not editing anything here.
+
+  So the output sets differ in three places, not one: this edition LOSES `signatures` and ADDS
+  `panel_identifiers` (the list three steps are keyed on, published so a reader can see it) and
+  `fasta_index` (the .fai the faidx UDT emits anyway, which the classic computed and discarded).
+  Twelve outputs against the classic's eleven, and the one that is missing is named above rather
+  than left for somebody to notice.
+
+  ⚠ THE IDENTIFIER LIST IS AN EXTRA STEP THAT LOOKS REDUNDANT AND IS NOT. Three of the UDTs take the
+  panel's element identifiers as a TEXT DATASET rather than reading them off the collection, because
+  a Galaxy job cannot see its input collection's identifiers -- the same constraint that makes WF-I
+  carry `hinge_names` as data. `collection_element_identifiers` is a stock IUC tool and runs on .org,
+  so the list is derived here instead of being asked of the user.
+
+creator:
+  - class: Person
+    name: BRC pipeline
+license: MIT
+release: "0.1"
+
+inputs:
+  assemblies:
+    type: collection
+    doc: Per-strain assembly FASTAs. Element identifier = strain name.
+    position: {top: 100, left: 40}
+  proteomes:
+    type: collection
+    doc: >-
+      Per-strain protein FASTAs, parallel to assemblies and keyed by strain. BUSCO runs -m prot, so
+      it MUST map over proteins, not assemblies.
+    position: {top: 240, left: 40}
+  busco_lineage:
+    type: string
+    default: apicomplexa_odb12
+    doc: >-
+      BUSCO lineage dataset, species-configurable. ⛔ THE SUFFIX MUST MATCH THE CACHED DATABASE THE
+      `busco` STEP RESOLVES AGAINST. usegalaxy.org 2026-09-03 offers all-odb12 (495 lineages, and it
+      is the tool default), all-odb10 (193) and v5 (67); an `_odb10` name is NOT selectable under
+      the default, and the names changed between releases -- odb10's `eudicots` is odb12's
+      `eudicotyledons`. For a non-Plasmodium panel take the narrowest lineage containing the
+      organism; odb12 reaches order level for many clades, e.g. `rosales_odb12` for Cannabaceae.
+    position: {top: 360, left: 40}
+  anchor_gene_gff3s:
+    type: collection
+    doc: >-
+      Curated gene GFF3 for each anchor, keyed by anchor name. A SUBSET of the panel, so this
+      collection is shorter than assemblies.
+    position: {top: 460, left: 40}
+
+outputs:
+  similarity_matrix:
+    outputSource: sourmash_panel/similarity
+    doc: N x N sourmash similarity matrix (compare.csv); feeds WF-I fold order.
+  sourmash_heatmap:
+    outputSource: sourmash_panel/heatmap
+    doc: Clustered sourmash similarity heatmap (PNG).
+  sourmash_dendrogram:
+    outputSource: sourmash_panel/dendrogram
+    doc: sourmash dendrogram (PNG).
+  busco_summaries:
+    outputSource: busco/busco_sum
+    doc: Per-strain BUSCO short summaries.
+  qc_report:
+    outputSource: multiqc_report/html_report
+    doc: MultiQC HTML — per-strain BUSCO completeness plus the sourmash heatmap and dendrogram.
+  panel_identifiers:
+    outputSource: panel_identifiers/output
+    doc: >-
+      The panel's element identifiers, one per line. Published because three steps consume it and a
+      reader otherwise cannot tell what the UDTs were actually keyed on.
+  sizes:
+    outputSource: panel_faidx/sizes
+    doc: >-
+      Per-strain chrom<TAB>length, consumed by WF-C. ⚠ Emitted DIRECTLY by the faidx UDT; the classic
+      workflow needed a separate `Cut c1,c2` step (`panel_sizes`) to make one, which is why this
+      edition has eight steps against the classic's nine while doing strictly more.
+  fasta_index:
+    outputSource: panel_faidx/output
+    doc: Per-strain .fai indexes for the input assemblies.
+  self_pairs:
+    outputSource: panel_self_pairs/output
+    doc: One X_X per strain (the WF-C alignment-grid diagonal to exclude).
+  relabel_map:
+    outputSource: panel_relabel_map/output
+    doc: A_B<TAB>A.B for every ordered pair (Phase E ids; WF-C relabel).
+  anchor_bed12s:
+    outputSource: anchor_prep/bed12
+    doc: Per-anchor protein-coding BED12, GENE id in column 4 (WF-C2 ref bed, TOGA2 --ref_annotation).
+  anchor_isoforms:
+    outputSource: anchor_prep/isoforms
+    doc: >-
+      Per-anchor gene<TAB>transcript table (TOGA2 --isoform_file). Derived from the same GFF3 as the
+      BED12 in the SAME step, so the two cannot disagree on transcript ids.
+
+steps:
+  # ---- the identifier list three UDTs need ------------------------------------------------------
+  panel_identifiers:
+    tool_id: collection_element_identifiers
+    label: panel_identifiers
+    position: {top: 100, left: 340}
+    doc: >-
+      The panel's element identifiers as a text dataset. ⛔ NOT REDUNDANT WITH THE COLLECTION. A
+      Galaxy job cannot read its input collection's identifiers, so any tool that needs the strain
+      NAMES -- to label a similarity matrix, or to build pair ids -- must be handed them as data.
+      Stock IUC tool; it runs on usegalaxy.org, so this costs a step and no new tool.
+    in:
+      input_collection: assemblies
+
+  # ---- sourmash: two classic steps, one job -----------------------------------------------------
+  sourmash_panel:
+    tool_id: brc-sourmash-panel
+    label: sourmash_panel
+    position: {top: 100, left: 640}
+    doc: >-
+      Sketch every assembly and compare them, in ONE job. The classic workflow spends two steps
+      (`sourmash_sketch` then `sourmash_compare`); collapsing them is what removes the need for the
+      intermediate signature collection to be a Galaxy dataset at all. ⛔ AND THAT IS ALSO WHY
+      `signatures` IS NOT AN OUTPUT of this edition -- see the workflow doc.
+    in:
+      assemblies: assemblies
+      identifiers: panel_identifiers/output
+    state:
+      ksize: 31
+
+  # ---- BUSCO on the proteomes -------------------------------------------------------------------
+  busco:
+    tool_id: busco
+    label: busco
+    position: {top: 300, left: 640}
+    doc: >-
+      BUSCO -m prot over the proteome collection. Stock IUC tool, installed on usegalaxy.org.
+      ⚠ `cached_db` IS DELIBERATELY UNSET: it names which cached lineage set `lineage_dataset` is
+      filtered against and defaults to all-odb12. Leaving it unset keeps this portable to instances
+      holding a different set, at the cost of the resolved lineage depending on the server's default.
+      Pinning it would trade portability for reproducibility; that is a maintainer's call, and it is
+      the same tradeoff the classic workflow makes silently.
+    in:
+      input: proteomes
+      lineage|lineage_dataset: busco_lineage
+    state:
+      busco_mode:
+        mode: prot
+      lineage:
+        lineage_mode: select_lineage
+      adv:
+        evalue: 0.001
+
+  multiqc_report:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/multiqc/multiqc/1.35+galaxy1
+    label: multiqc_report
+    position: {top: 300, left: 940}
+    doc: Per-strain BUSCO completeness plus the two sourmash plots, in one report.
+    in:
+      results_0|software_cond|input: busco/busco_sum
+      image_content_input:
+        - sourmash_panel/heatmap
+        - sourmash_panel/dendrogram
+
+  # ---- the bookkeeping half ---------------------------------------------------------------------
+  panel_self_pairs:
+    tool_id: brc-self-pairs
+    label: panel_self_pairs
+    position: {top: 460, left: 640}
+    doc: One {id}_{id} line per identifier — the self-cross diagonal WF-C drops.
+    in:
+      identifiers: panel_identifiers/output
+
+  panel_relabel_map:
+    tool_id: brc-relabel-map
+    label: panel_relabel_map
+    position: {top: 560, left: 640}
+    doc: "{a}_{b}<TAB>{a}.{b} for every ordered pair, to rename WF-C's cross-product cells."
+    in:
+      identifiers: panel_identifiers/output
+
+  panel_faidx:
+    tool_id: brc-samtools-faidx
+    label: panel_faidx
+    position: {top: 660, left: 640}
+    doc: >-
+      Index each assembly. ⚠ Emits the chrom/length table as its OWN second output, which is why
+      this edition has no `panel_sizes` step: the classic workflow's `Cut1` on the .fai is
+      unnecessary here. That also removes an unpinned `Cut1` tool id from the graph.
+    in:
+      input: assemblies
+
+  # ---- the anchors ------------------------------------------------------------------------------
+  anchor_prep:
+    tool_id: brc-anchor-prep
+    label: anchor_prep
+    position: {top: 800, left: 640}
+    doc: >-
+      Per-anchor BED12 + isoforms table, from one GFF3 in one job. ⛔ Drops organellar features whose
+      strand gffread cannot parse before calling it: two such rows in an NCBI RefSeq GFF3 (cs10:
+      `nad1` on the mitochondrion) make gffread exit and emit NOTHING for a 29,813-gene annotation.
+      ⚠ The job log also reports how many kept BED12 rows are non-coding — 13.1% on cs10 — because
+      the gene filter accepts feature type `gene`, which NCBI uses for every biotype. Both behaviours
+      match tools/anchor_prep byte for byte; the port reports them rather than changing them.
+    in:
+      input: anchor_gene_gff3s
