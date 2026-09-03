@@ -204,7 +204,18 @@ DUPLICATED_HELPERS = (
 )
 
 #: Content-duplicate files that are NOT inlined helpers, so divergence between them is harmless.
-DUPLICATE_ALLOWLIST = {("tools/sourmash_compare/macros.xml", "tools/sourmash_sketch/macros.xml")}
+DUPLICATE_ALLOWLIST = {
+    ("tools/sourmash_compare/macros.xml", "tools/sourmash_sketch/macros.xml"),
+    # ⚠ Cyclospora ships three helpers twice each -- <tool>/X.py mirrored into scripts/X.py --
+    # and INLINES NO COPY OF ANY OF THEM, so the divergence this guard exists to catch cannot
+    # reach a UDT. Collapsing the two copies would be the better fix if that line wants only one.
+    ("tools/cyclospora/cyclospora_build_sheet/build_hds_sheet.py",
+     "tools/cyclospora/scripts/build_hds_sheet.py"),
+    ("tools/cyclospora/cyclospora_junction_caller/junction_caller.py",
+     "tools/cyclospora/scripts/junction_caller.py"),
+    ("tools/cyclospora/cyclospora_part_caller/part_haplotype_caller.py",
+     "tools/cyclospora/scripts/part_haplotype_caller.py"),
+}
 
 
 def command_text(xml_path: pathlib.Path) -> str:
