@@ -5,12 +5,30 @@
     </requirements>
     <command detect_errors="exit_code"><![CDATA[
 python '$__tool_directory__/anchor_grid.py'
-    --anchors '#echo " ".join([str($el.element_identifier) for $el in $anchors])#'
-    --strains '#echo " ".join([str($el.element_identifier) for $el in $strains])#'
+    --anchors-file '$anchors_file'
+    --strains-file '$strains_file'
     --keep '$keep'
     --relabel '$relabel'
     --order '$order'
     ]]></command>
+    <!--
+        ONE IDENTIFIER PER LINE, NOT SPACE-JOINED, SO THE TWO EDITIONS CANNOT DISAGREE.
+        This used to build `#echo " ".join(...)#` into an inline argument and the script split it
+        on whitespace, which destroys the one thing it was carrying: an element identifier
+        containing a space (Galaxy permits one) arrived as several identifiers. Measured: one
+        anchor `P knowlesi H` against a three strain panel produced a NINE row keep list naming
+        chains that do not exist, exit 0, while the User Defined Tool edition (handed the
+        identifiers as a file, because a UDT has no Cheetah) produced the correct two. The
+        script's whitespace refusal could never fire on that path, because the split had already
+        happened, so the guard covered the port and not the wrapper it is supposed to mirror.
+        A configfile carries the identifiers verbatim and both editions now take the same route.
+    -->
+    <configfiles>
+        <configfile name="anchors_file">#for $el in $anchors#${el.element_identifier}
+#end for#</configfile>
+        <configfile name="strains_file">#for $el in $strains#${el.element_identifier}
+#end for#</configfile>
+    </configfiles>
     <inputs>
         <param name="anchors" type="data_collection" collection_type="list"
                label="Anchor collection"

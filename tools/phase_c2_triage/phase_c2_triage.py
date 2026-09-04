@@ -70,7 +70,7 @@ class GeneRecord:
 
     def __init__(self, gene_id, chrom, start, end, strand, attrs):
         self.gene_id = gene_id
-        self.reference_id = normalize_gene_id(gene_id)
+        self.reference_id = normalize_gene_id(gene_id, attrs)
         self.chrom = chrom
         self.start = start
         self.end = end
@@ -79,7 +79,33 @@ class GeneRecord:
         self.transcripts = []
 
 
-def normalize_gene_id(gid: str) -> str:
+def normalize_gene_id(gid: str, attrs: dict | None = None) -> str:
+    """The reference gene this projection belongs to.
+
+    ⛔ ASK LIFTOFF, DO NOT GUESS FROM THE NAME. This used to strip any `_<1-2 digits>` suffix on
+    sight, to fold Liftoff's extra-copy names (`geneX_1`) back onto their parent -- and it cannot
+    tell that from a REFERENCE GENE whose own id ends that way, which is exactly how the variant
+    gene families this pipeline exists to study are named. Measured on three cleanly projected
+    genes `SICAvar_1`, `SICAvar_2`, `PKNH_1400300`: the classification table came out with FOUR
+    rows, inventing a reference gene `SICAvar` that appears in no BED and reporting both real
+    SICAvar genes as `source=none, intactness=M` -- never projected -- while the GFF3 beside it
+    said all three were projected and intact. `SICAvar_2`'s projection vanished entirely. In
+    triage the same collision made `summary.json` disagree with itself: two genes flagged,
+    `needs_cesar2: 1`, a 50% fallback rate for a 100% fallback, and an EMPTY `needs_cesar2.bed`
+    because the invented id matched nothing in the reference.
+
+    Liftoff states the answer outright. It writes `extra_copy_number` on every gene it projects --
+    0 for the primary, >0 for a copy -- and this module already reads that attribute for rule R4
+    and already writes it into `triage.tsv`. So a suffix is stripped ONLY when Liftoff says the
+    gene is a copy. An annotation that carries no such attribute has no copies to fold, and its
+    ids are taken as given.
+    """
+    try:
+        copies = int(str((attrs or {}).get("extra_copy_number", "0")).strip() or "0")
+    except ValueError:
+        copies = 0
+    if copies <= 0:
+        return gid
     m = EXTRA_COPY_RE.match(gid)
     if not m:
         return gid
@@ -353,6 +379,50 @@ def main():
 
     if not genes:
         LOG.error("No genes parsed — check GFF chrom names match FASTA")
+        sys.exit(1)
+
+    # ⛔ A QUERY FASTA THAT IS NOT THIS GFF'S GENOME PRODUCES OUTPUT BYTE-IDENTICAL TO A CLEAN RUN.
+    # Every sequence lookup then raises KeyError, each one is swallowed per gene by design, and
+    # rules R1b (CDS length), R1c (internal stop), R6 (splice sites) and R7 (subtelomeric) all
+    # silently do nothing -- so every gene comes out LIFTOFF_OK. Measured: the same inputs with
+    # only the FASTA's seqid changed from `chr1` to `chrX` gave all four outputs identical by md5,
+    # exit 0, nothing on stderr, and a 0% fallback rate -- which emits no warning, because the only
+    # rate warnings are `> 50%` and (`< 2%` AND a family list was supplied).
+    #
+    # This is reachable in WF-C2 by construction: triage's query_fasta and its liftoff_gff come
+    # from two DIFFERENT cross products over two different pairs of collections, joined downstream
+    # by POSITION. If those collections are not in the same element order, every cell is triaged
+    # against another strain's genome. The script already refuses the mirror image ("No genes
+    # parsed -- check GFF chrom names match FASTA"); this is the same fault from the other side.
+    _gff_chroms = {g.chrom for g in genes}
+    _shared = _gff_chroms & set(chrom_sizes)
+    if genes and not _shared:
+        LOG.error("NONE of the %d sequence name(s) in the GFF appear in the query FASTA. "
+                  "GFF has %s; FASTA has %s. Every sequence-dependent rule (R1b, R1c, R6, R7) "
+                  "would silently pass and every gene would be reported LIFTOFF_OK -- output "
+                  "indistinguishable from a clean projection. Refusing: this is almost always the "
+                  "wrong genome for this annotation.",
+                  len(_gff_chroms), sorted(_gff_chroms)[:3], sorted(chrom_sizes)[:3])
+        sys.exit(1)
+
+    # ⛔ AND SHARING THE SEQUENCE NAMES IS NOT THE SAME AS BEING THE RIGHT GENOME. The check above
+    # only fires when the GFF and the FASTA have NO name in common, which catches a cross-species
+    # mix-up and nothing else. This pipeline's panels are strains of ONE species with identical
+    # chromosome names, so a positional mis-pairing -- two independent cross products joined by
+    # POSITION, which is how WF-C2 wires this tool -- shares every seqid and sails straight past it.
+    # Coordinates do not: Liftoff projects ONTO the query, so a projected gene cannot extend past
+    # the end of the query chromosome it was projected onto. A gene that does is proof that this
+    # FASTA is not the genome these coordinates describe.
+    _oob = [g for g in genes
+            if g.chrom in chrom_sizes and g.end > chrom_sizes[g.chrom]]
+    if _oob:
+        LOG.error("%d of %d gene(s) lie beyond the end of the query sequence they are annotated "
+                  "on -- e.g. %s at %s:%d-%d where %s is %d bp. Liftoff projects ONTO this genome, "
+                  "so a projection cannot overrun it: this FASTA is not the assembly these "
+                  "coordinates came from. Every sequence-dependent rule would read the wrong bases "
+                  "and most would silently pass. Refusing.",
+                  len(_oob), len(genes), _oob[0].gene_id, _oob[0].chrom, _oob[0].start,
+                  _oob[0].end, _oob[0].chrom, chrom_sizes[_oob[0].chrom])
         sys.exit(1)
 
     ref_bed_lines = read_reference_bed(args.reference_bed)
