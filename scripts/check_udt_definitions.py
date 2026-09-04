@@ -33,9 +33,14 @@ Exit status is 1 if any PROBLEM was found. Notes never fail the run.
 """
 import argparse
 import itertools
+import json
+import os
 import pathlib
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import yaml
 
@@ -83,6 +88,72 @@ PLAIN_TAG_OK = {"python", "perl", "r-base", "busybox", "bash", "gawk"}
 #: Flags whose ARGUMENT is a thread count. Recording $GALAXY_SLOTS while passing a literal here is
 #: the mistake the skill calls out by name: "recording the value isn't using it".
 THREAD_FLAGS = r"(?:--threads|--cpus|--num[-_]threads|--nproc|--jobs|-@|-p|-t|-j)"
+
+
+#: Where a container check's answers are remembered, OUTSIDE the working tree -- the same reason
+#: check_workflow_ports.py keeps its tool-schema cache there: a cache inside the repo gets
+#: committed by accident exactly once, and then needs a .gitignore line forever.
+CACHE = pathlib.Path(
+    os.environ.get("XDG_CACHE_HOME") or (pathlib.Path.home() / ".cache")) / "brc-tools" / "containers.json"
+
+
+def container_exists(image, timeout=20):
+    """Does this image actually exist? (True/False/None for "could not ask").
+
+    ⛔ THE ONE FAILURE EVERY OTHER CHECK HERE IS BLIND TO. Nothing in the schema, in
+    galaxy-tool-util's lint, or in Galaxy's own create step resolves a container image: a UDT
+    naming a tag that does not exist REGISTERS cleanly and then dies at job start with
+    `manifest unknown`. The udt-authoring skill calls guessing the `--<hash>_<build>` suffix the
+    single most common real UDT failure -- and this repository shipped exactly that, in
+    `quay.io/biocontainers/tantan:51--h4ac6f70_0`, which meant WF-B's UDT edition had never been
+    able to run. This file NAMED that hazard in a comment and did not check it. One HTTP request
+    closes it.
+
+    ⚠ AND A FAILED REQUEST IS `None`, NOT `False`. A proxy refusal or a rate limit is a statement
+    about this network, not about the image, and reporting it as a missing container would be the
+    same laundering of a self-inflicted fetch failure into a fact about the world that has bitten
+    this project before.
+    """
+    if not image.startswith("quay.io/biocontainers/"):
+        return None
+    repo_tag = image.split("quay.io/biocontainers/", 1)[1]
+    if ":" not in repo_tag:
+        return None
+    name, tag = repo_tag.rsplit(":", 1)
+    cache = {}
+    if CACHE.exists():
+        try:
+            cache = json.loads(CACHE.read_text())
+        except ValueError:
+            cache = {}
+    if image in cache:
+        return cache[image]
+    # depot.galaxyproject.org mirrors every biocontainer and answers a HEAD cheaply; quay's tag
+    # API is the second opinion, because depot lags a very new build by a few hours.
+    answer = None
+    try:
+        req = urllib.request.Request(
+            f"https://depot.galaxyproject.org/singularity/{urllib.parse.quote(name)}%3A{urllib.parse.quote(tag)}",
+            method="HEAD")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            answer = r.status == 200
+    except urllib.error.HTTPError as e:
+        answer = False if e.code == 404 else None
+    except Exception:                                   # noqa: BLE001 -- network, not the image
+        answer = None
+    if answer is False:
+        try:
+            url = (f"https://quay.io/api/v1/repository/biocontainers/{urllib.parse.quote(name)}"
+                   f"/tag/?onlyActiveTags=true&specificTag={urllib.parse.quote(tag)}")
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                answer = bool(json.load(r).get("tags"))
+        except Exception:                               # noqa: BLE001
+            pass
+    if answer is not None:
+        cache[image] = answer
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE.write_text(json.dumps(cache, indent=1, sort_keys=True))
+    return answer
 
 
 def walk_inputs(nodes, prefix=""):
@@ -220,7 +291,7 @@ def authoritative(path, data):
     return [("LINT", path.name, b) for b in lint_user_tool_source(tool)], True
 
 
-def lint(path):                                     # this IS a checklist; it is long on purpose
+def lint(path, containers=True):                    # this IS a checklist; it is long on purpose
     """Return (problems, notes), each a list of (CODE, where, message)."""
     problems, notes = [], []
     where = path.name
@@ -267,6 +338,17 @@ def lint(path):                                     # this IS a checklist; it is
         elif tag == "latest":
             bad("CONTAINER-UNPINNED", f"{container!r} is pinned to `latest`; a rebuild silently "
                                       f"changes what ran")
+        elif containers and (exists := container_exists(container)) is False:
+            bad("NO-SUCH-CONTAINER",
+                f"{container!r} DOES NOT EXIST -- neither depot.galaxyproject.org nor quay has "
+                f"that tag. The tool will REGISTER cleanly, because creating a UDT never resolves "
+                f"its image, and then every job dies at start with `manifest unknown`. Never guess "
+                f"the `--<hash>_<build>` suffix; look it up.")
+        elif containers and exists is None:
+            note("CONTAINER-UNCHECKED",
+                 f"{container!r}: could not confirm the image exists (not a biocontainer, or the "
+                 f"registry was unreachable). Nothing offline can resolve an image, so this is the "
+                 f"one failure a clean run here does not rule out.")
         elif ("biocontainers/" in container and "--" not in tag
               and container.rsplit("/", 1)[-1].split(":")[0] not in PLAIN_TAG_OK):
             # ⚠ NOT A PROBLEM -- A SMELL. A biocontainers tag almost always carries a
@@ -319,6 +401,28 @@ def lint(path):                                     # this IS a checklist; it is
         if t == "select" and not (node.get("options") or []):
             bad("SELECT-NO-OPTIONS", f"select `{iname}` declares no `options` (a UDT select is "
                                      f"static -- there is no dynamic option source)")
+        for v in node.get("validators") or []:
+            if not isinstance(v, dict) or v.get("type") != "regex":
+                continue
+            expr = str(v.get("expression") or "")
+            if "regex" in v:
+                bad("VALIDATOR-FIELD", f"input `{iname}`: a regex validator's pattern goes in "
+                                       f"`expression`; `regex` is the XML spelling and the model "
+                                       f"rejects it as an extra field")
+            # ⛔ `re.match` IS ANCHORED AT THE START ONLY, and Galaxy's own
+            # RegexParameterValidatorModel docstring says so: "To enforce a match of the complete
+            # value use `$` at the end of the expression." Without it only the FIRST CHARACTER is
+            # constrained. Measured against that model, `[A-Za-z0-9_.-]+` accepted `Pk ANKA`,
+            # `a$(id)`, `../../etc/passwd` and `Pk_ANKA'; touch pwned.txt; echo '` -- and because a
+            # scalar is interpolated into shell_command UNQUOTED and not shlex-quoted, that last
+            # one cut a python invocation short of its --output-dir and left the job at EXIT 0
+            # with all four of its from_work_dir outputs missing. A validator whose message
+            # promises a character set and enforces one character is worse than none.
+            elif expr and not expr.rstrip().endswith(("$", r"\Z", r"\z")):
+                bad("UNANCHORED-VALIDATOR",
+                    f"input `{iname}`: regex {expr!r} is applied with `re.match`, which anchors at "
+                    f"the START only -- everything after the first matching run is unconstrained. "
+                    f"End it with `$`.")
         if node.get("optional") and "value" not in node and t in SCALAR_TYPES:
             note("NO-DEFAULT", f"optional `{iname}` has no `value`; a user must fill it in to run "
                                f"the tool at all")
@@ -627,6 +731,9 @@ DEFECTS = [
     ("udt/samtools_faidx.gxtool.yml", "container as a dict",
      "container: quay.io/biocontainers/samtools:1.24--h9dcdb79_1",
      "container:\n  type: docker\n  image: samtools", "BLANK-CONTAINER"),
+    ("udt/samtools_faidx.gxtool.yml", "a container tag that does not exist",
+     "container: quay.io/biocontainers/samtools:1.24--h9dcdb79_1",
+     "container: quay.io/biocontainers/samtools:1.24--hdeadbeef_9", "NO-SUCH-CONTAINER"),
     ("udt/samtools_faidx.gxtool.yml", "container pinned to latest",
      "container: quay.io/biocontainers/samtools:1.24--h9dcdb79_1",
      "container: quay.io/biocontainers/samtools:latest", "CONTAINER-UNPINNED"),
@@ -660,6 +767,8 @@ DEFECTS = [
     ("udt/samtools_faidx.gxtool.yml", "one output pre-created, the other not",
      "  samtools faidx seq.fa", "  touch seq.fa.fai\n  samtools faidx seq.fa",
      "OUTPUT-CREATE-ASYMMETRY"),
+    ("udt/phase_c2_triage.gxtool.yml", "a regex validator anchored at one end only",
+     'expression: "[A-Za-z0-9_.-]+$"', 'expression: "[A-Za-z0-9_.-]+"', "UNANCHORED-VALIDATOR"),
     ("udt/sourmash_panel.gxtool.yml", "a scalar addressed as a File",
      "--ksize '$(inputs.ksize)'", "--ksize '$(inputs.ksize.path)'", "PATH-ON-SCALAR"),
 ]
@@ -696,6 +805,9 @@ def main() -> int:
                     help="inject each defect class into this repo's own tools and confirm it is "
                          "caught. A checker nobody has seen go red is not evidence of anything.")
     ap.add_argument("--notes", action="store_true", help="also print convention notes")
+    ap.add_argument("--offline", action="store_true",
+                    help="skip the container-existence probe -- the one check here that needs a "
+                         "network, and the one failure nothing offline can rule out")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
@@ -703,10 +815,13 @@ def main() -> int:
     paths = args.tools or sorted((ROOT / "udt").glob("*.gxtool.yml"))
     problems, notes = [], []
     for p in paths:
-        pr, nt = lint(p)
+        pr, nt = lint(p, containers=not args.offline)
         problems += pr
         notes += nt
     print(f"  {len(paths)} UDT definition(s) checked against the udt-authoring skill")
+    if args.offline:
+        print("  ⚠ CONTAINER PROBE SKIPPED (--offline) — a UDT naming an image that does not "
+              "exist passes every other check here and dies at job start. NOT a pass.")
     if getattr(lint, "ran_authoritative", False):
         print("  + galaxy-tool-util is installed, so the SERVER's own schema validation and lint "
               "ran too\n")

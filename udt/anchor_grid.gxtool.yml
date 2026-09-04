@@ -90,10 +90,18 @@ shell_command: |
       """
       ids = ([x for x in inline.split() if x] if inline is not None
              else [x.strip() for x in open(path, encoding="utf-8-sig") if x.strip()])
-      bad = [i for i in ids if "\t" in i]
+      # ⛔ ANY WHITESPACE, NOT JUST A TAB -- OTHERWISE THE TWO EDITIONS COMPUTE DIFFERENT GRIDS.
+      # The XML wrapper passes `" ".join(identifiers)` into --anchors and this splits on whitespace,
+      # so ONE anchor named `P knowlesi H` becomes THREE. Measured: the XML edition produced a
+      # 12-row keep list against the UDT edition's correct 2, selecting chains that do not exist and
+      # relabelling nothing -- the "identifiers all look right, TOGA2 processes 0 chains" failure
+      # this tool exists to prevent. Galaxy permits spaces in element identifiers, so refusing here
+      # is what stops the wrapper from silently disagreeing with the tool it is supposed to mirror.
+      bad = [i for i in ids if any(c.isspace() for c in i)]
       if bad:
-          raise SystemExit(f"{what} identifier(s) contain a tab, which breaks the relabel map's "
-                           f"column contract: {bad[:3]}")
+          raise SystemExit(f"{what} identifier(s) contain whitespace, which the XML wrapper's "
+                           f"space-joined argument cannot round-trip and which breaks the relabel "
+                           f"map's column contract: {bad[:3]}")
       if len(set(ids)) != len(ids):
           dupes = sorted({i for i in ids if ids.count(i) > 1})
           raise SystemExit(f"duplicate {what} identifier(s) {dupes[:3]}: the grid is a cross product, "
@@ -122,6 +130,15 @@ shell_command: |
           raise SystemExit(f"anchors absent from the strain collection: {missing}")
 
       pairs = grid(anchors, strains)
+      # ⛔ AN EMPTY GRID IS NOT AN ANSWER. A one-genome panel whose only member is also the anchor
+      # drops its single self-cell and leaves nothing, and this used to write three empty files and
+      # exit 0 -- while every other degenerate input here refuses loudly. Downstream an empty
+      # keep.txt through __FILTER_FROM_FILE__ with remove_if_absent removes EVERY chain, so the
+      # whole projection grid comes out empty and green.
+      if not pairs:
+          raise SystemExit(f"the grid is empty: {len(anchors)} anchor(s) against {len(strains)} "
+                           f"strain(s) leaves no cell once the anchor self-cells are dropped. "
+                           f"A panel needs at least one genome that is not an anchor.")
       with open(args.keep, "w") as kf, open(args.relabel, "w") as rf, open(args.order, "w") as of:
           for a, q in pairs:
               kf.write(f"{a}.{q}\n")

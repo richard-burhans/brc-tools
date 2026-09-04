@@ -343,8 +343,17 @@ shell_command: |
   $(inputs.query_annotation ? "ln -s '" + inputs.query_annotation.path + "' toga_dir/query_annotation.bed &&" : "")
   $(inputs.query_genes ? "ln -s '" + inputs.query_genes.path + "' toga_dir/query_genes.bed &&" : "")
   if { [ -e toga_dir/loss_summary.tsv ] && [ ! -e toga_dir/orthology_classification.tsv ]; } ||
-     { [ ! -e toga_dir/loss_summary.tsv ] && [ -e toga_dir/orthology_classification.tsv ]; }; then
-    echo "⛔ brc-phase-c4-merge: TOGA2 rescue needs BOTH loss_summary and orthology_classification." >&2
+     { [ ! -e toga_dir/loss_summary.tsv ] && [ -e toga_dir/orthology_classification.tsv ]; } ||
+     { [ ! -e toga_dir/loss_summary.tsv ] && { [ -e toga_dir/query_annotation.bed ] ||
+                                              [ -e toga_dir/query_genes.bed ]; }; }; then
+    echo "⛔ brc-phase-c4-merge: the TOGA2 inputs are not a usable set." >&2
+    echo "   A rescue pass needs BOTH loss_summary AND orthology_classification, and the two BED" >&2
+    echo "   files are meaningful only alongside them. The XML wrapper makes this unreachable by" >&2
+    echo "   putting all four inside one conditional; four independent optionals can express a" >&2
+    echo "   state the classic tool cannot, and one of them is not benign: query_genes ALONE" >&2
+    echo "   writes genes attributed to CESAR2 -- a pass this edition does not run -- into the" >&2
+    echo "   merged annotation, with an empty reference_gene_id, while the classification table" >&2
+    echo "   for the same job calls that locus unprojected. Measured, exit 0." >&2
     echo "   Exactly one was supplied. With neither, this runs the Liftoff-only pass and every" >&2
     echo "   projected gene is tagged source=liftoff -- a legitimate and common mode. With one," >&2
     echo "   the merge would silently read an empty TOGA directory and produce that SAME output" >&2
@@ -368,6 +377,16 @@ inputs:
       Names the files the script writes, and nothing else -- it is not written into them. Letters,
       digits, underscore, hyphen and dot only.
     validators:
+      # ⛔ AND IT MUST END IN `$`. Galaxy's RegexParameterValidatorModel uses `regex.match`, which
+      # is anchored at the START ONLY -- its own docstring says so: "To enforce a match of the
+      # complete value use `$` at the end of the expression." Without it only the FIRST character
+      # is constrained, so a validator whose message promises "letters, digits, underscore, hyphen,
+      # dot only" accepted `Pk ANKA`, `a$(id)`, `../../etc/passwd` and
+      # `Pk_ANKA'; touch pwned.txt; echo '` -- and that last one made the triage job exit 0 with
+      # ALL FOUR outputs missing, because the `;` cut the python invocation short of --output-dir
+      # and the trailing echo became the last command in the chain. Measured against Galaxy's own
+      # model. A scalar is not shlex-quoted, so the validator is the only thing standing there.
+      #
       # ⚠ THE FIELD IS `expression`, NOT `regex`. The XML spelling is
       # `<validator type="regex">PATTERN</validator>`, and carrying that name over produced four
       # pydantic errors at once -- RegexParameterValidatorModel.expression missing AND `regex`
@@ -375,7 +394,7 @@ inputs:
       # check_udt_definitions.py calls the server's own model when it is installed.
       - type: regex
         message: Letters, digits, underscore, hyphen, dot only
-        expression: "[A-Za-z0-9_.-]+"
+        expression: "[A-Za-z0-9_.-]+$"
   - name: liftoff_clean
     type: data
     format: gff3,gff

@@ -355,6 +355,30 @@ def main():
         LOG.error("No genes parsed — check GFF chrom names match FASTA")
         sys.exit(1)
 
+    # ⛔ A QUERY FASTA THAT IS NOT THIS GFF'S GENOME PRODUCES OUTPUT BYTE-IDENTICAL TO A CLEAN RUN.
+    # Every sequence lookup then raises KeyError, each one is swallowed per gene by design, and
+    # rules R1b (CDS length), R1c (internal stop), R6 (splice sites) and R7 (subtelomeric) all
+    # silently do nothing -- so every gene comes out LIFTOFF_OK. Measured: the same inputs with
+    # only the FASTA's seqid changed from `chr1` to `chrX` gave all four outputs identical by md5,
+    # exit 0, nothing on stderr, and a 0% fallback rate -- which emits no warning, because the only
+    # rate warnings are `> 50%` and (`< 2%` AND a family list was supplied).
+    #
+    # This is reachable in WF-C2 by construction: triage's query_fasta and its liftoff_gff come
+    # from two DIFFERENT cross products over two different pairs of collections, joined downstream
+    # by POSITION. If those collections are not in the same element order, every cell is triaged
+    # against another strain's genome. The script already refuses the mirror image ("No genes
+    # parsed -- check GFF chrom names match FASTA"); this is the same fault from the other side.
+    _gff_chroms = {g.chrom for g in genes}
+    _shared = _gff_chroms & set(chrom_sizes)
+    if genes and not _shared:
+        LOG.error("NONE of the %d sequence name(s) in the GFF appear in the query FASTA. "
+                  "GFF has %s; FASTA has %s. Every sequence-dependent rule (R1b, R1c, R6, R7) "
+                  "would silently pass and every gene would be reported LIFTOFF_OK -- output "
+                  "indistinguishable from a clean projection. Refusing: this is almost always the "
+                  "wrong genome for this annotation.",
+                  len(_gff_chroms), sorted(_gff_chroms)[:3], sorted(chrom_sizes)[:3])
+        sys.exit(1)
+
     ref_bed_lines = read_reference_bed(args.reference_bed)
 
     triage_rows = []

@@ -128,6 +128,14 @@ def sources_of(ref):
     """
     if isinstance(ref, list):
         return [s for r in ref for s in sources_of(r)]
+    if isinstance(ref, dict) and isinstance(ref.get("source"), list):
+        # ⛔ AND THE DICT'S `source` CAN ITSELF BE A LIST -- gxformat2's `Sink.source` is
+        # `None | str | list[str]`, and `{source: [a/b, c/d]}` is what GALAXY WRITES when it
+        # exports a workflow in format2. So every workflow that has been round-tripped through a
+        # Galaxy had all of its multi-source edges invisible here: unvalidated, uncounted for
+        # reachability, and missing from the graph the collection checks reason over. Measured by
+        # importing this repo's own WF-A port and exporting `style=format2`.
+        return [s for r in ref["source"] for s in sources_of(r)]
     one = source_of(ref)
     return [one] if one else []
 
@@ -139,9 +147,17 @@ def addressable(key, params):
     # queries_1|input2 -> queries_*|input2
     import re
     wild = re.sub(r"_\d+(\|)", r"_*\1", key)
-    if wild in params or wild.split("|")[0] in params:
+    if wild in params:
         return True
-    return key.split("|")[0] in params
+    # ⛔ THE LAST RESORT USED TO BE `key.split("|")[0] in params`, WHICH ACCEPTS ANYTHING AFTER A
+    # VALID PREFIX. `lineage|lineage_datasetXX` passed against the live busco schema and the run
+    # printed "every parameter names a real tool input". A repeat's children are the one case that
+    # genuinely cannot be enumerated ahead of time -- Galaxy reports `queries_0|input2` and a
+    # workflow may address `queries_7|…` -- so the prefix escape is now allowed ONLY for a repeat.
+    root = key.split("|")[0]
+    if root in params and (params[root] or {}).get("type") == "repeat":
+        return True
+    return re.sub(r"_\d+$", "_*", root) in params or (root in params and "|" not in key)
 
 
 
@@ -165,6 +181,11 @@ DEFECTS = [
     # unmodified WF-A port (for `anchor_gene_gff3s`, correctly), so a fixture that only greps for
     # the code would pass without the injection doing anything at all -- the classic vacuous test.
     # Naming the input the injection is supposed to newly implicate makes the case real.
+    # ⚠ THE MOVED ACTION -- the case the label-keyed comparison could not see at all.
+    ("workflows/inventory/inventory_udt.gxwf.yml", "the MOVED handoff tag loses its name: prefix",
+     "{tags: name:wfc_sizes}", "{tags: wfc_sizes}", "PARITY-DRIFT"),
+    ("workflows/inventory/inventory_udt.gxwf.yml", "a post_job_action on an output that is not there",
+     "        output_name: bed12", "        output_name: bed13", "PJA-GHOST-OUTPUT"),
     ("workflows/inventory/inventory_udt.gxwf.yml", "a collection nothing receives whole",
      "      assemblies: assemblies\n", "      assemblies: proteomes\n",
      "EMPTY-COLLECTION `assemblies`"),
@@ -348,6 +369,22 @@ def main() -> int:
                                  f"dataset (AUTO_PROPAGATED_TAGS = ['name']) and it renders as an "
                                  f"ordinary tag, not a #hashtag. Deliberate?")
 
+    # -- 4a3. a post_job_action must name a real output -------------------------------------
+    #    ⚠ A RENAME POINTED AT A GHOST IS A RENAME THAT DOES NOTHING, silently: Galaxy attaches the
+    #    action to an output name that never appears, and the dataset keeps its default label. The
+    #    parity half compares argument VALUES, so an action whose `output_name` was mistyped still
+    #    matches the classic's and reads as present.
+    for name, s in steps.items():
+        tid = s.get("tool_id", "")
+        if tid not in udt:
+            continue
+        for act, spec in (s.get("post_job_actions") or {}).items():
+            on = (spec or {}).get("output_name")
+            if on and on not in udt[tid]["outputs"]:
+                bad("PJA-GHOST-OUTPUT", f"{name}.{act}",
+                    f"acts on output {on!r}, which {tid} does not declare; it has "
+                    f"{sorted(udt[tid]['outputs'])}. The action attaches to nothing.")
+
     # -- 4b. a connection into a repeat needs that repeat instance DECLARED ------------------
     #    ⛔ THIS CHECK EXISTS BECAUSE THE ABSENCE OF ONE SHIPPED A BROKEN WORKFLOW PAST IT. WF-A's
     #    UDT edition connected `results_0|software_cond|input` while declaring no `state: results:`
@@ -401,6 +438,41 @@ def main() -> int:
                         bad("PARITY-LOSS", f"{kind} {lost}",
                             f"`{classic.name}` declares it and this port does not, and the port's "
                             f"`doc:` never mentions it. Say why, or restore it.")
+            # ⛔ COMPARE THE ARGUMENTS ACROSS THE WHOLE FILE, NOT PER STEP. Keyed on the step
+            # LABEL, this check could not see any action the port MOVED: WF-A's port deletes the
+            # classic's `panel_sizes` (Cut1) and puts its rename and tag on `panel_faidx`, which in
+            # the classic has no post_job_actions at all -- so `theirs` was empty, the comparison
+            # was skipped, and two of the five handoff actions sat outside the net. Measured: with
+            # `name:` stripped from `wfc_self_pairs` the run went RED, and with it stripped from
+            # `wfc_sizes` -- the moved one -- the run stayed GREEN. This script's own PLAIN-TAG
+            # self-test picked the unprotected one, so the test demonstrated that the run passes.
+            #
+            # The NAMES AND TAGS are the handoff; which step sets them is bookkeeping. Comparing
+            # the set of values is robust to a move, to a renamed output port, and to a step being
+            # deleted, and it still catches a dropped action, a restyled string and a stripped
+            # `name:` prefix -- all three of which happened.
+            def handoff(doc_):
+                out = {"newname": set(), "tags": set()}
+                for st in (doc_.get("steps") or {}).values():
+                    for spec in (st.get("post_job_actions") or {}).values():
+                        args = (spec or {}).get("action_arguments") or {}
+                        for field in out:
+                            if args.get(field):
+                                out[field] |= {v.strip() for v in str(args[field]).split(",")
+                                               if v.strip()}
+                return out
+
+            theirs_h, mine_h = handoff(cw), handoff(wf)
+            for field in ("newname", "tags"):
+                for lost in sorted(theirs_h[field] - mine_h[field]):
+                    if f"`{lost}`" in doc:
+                        notes.append(f"DROPPED   {field} `{lost}` — absent here, explained in doc:")
+                    else:
+                        bad("PARITY-DRIFT", f"{field} {lost!r}",
+                            "the classic sets this and no step in this port does. These strings "
+                            "ARE the handoff -- the next workflow stages by this exact name or "
+                            "tag. Restore it, or say in `doc:` why it differs.")
+
             for label, cs in (cw.get("steps") or {}).items():
                 theirs = set(cs.get("post_job_actions") or {})
                 if not theirs:
@@ -530,6 +602,14 @@ def main() -> int:
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     unchecked.append(f"{name} ({tid})")
+                elif e.code in (408, 429, 500, 502, 503, 504):
+                    # ⚠ A THROTTLED OR FLAPPING SERVER IS NOT A BROKEN WORKFLOW. Reproduced live:
+                    # ucsc_hub.gxwf.yml reported "10 PROBLEM(S) ... HTTP 429" on one run and zero
+                    # problems on the next, same file. Reporting a correct workflow as defective
+                    # because the server said "slow down" is the same class of error as reporting a
+                    # 404 that way -- it is a statement about the server, not the file -- and the
+                    # 404 branch already withholds rather than accusing.
+                    unchecked.append(f"{name} ({tid}) [HTTP {e.code}]")
                 else:
                     bad("UNRESOLVED", name, f"{tid} -> HTTP {e.code}")
                 continue
@@ -540,7 +620,22 @@ def main() -> int:
                 continue
             params = flatten(sch.get("inputs"))
             remote_params[name] = params
-            for key_ in list(s.get("in") or {}) + list(s.get("state") or {}):
+            # ⛔ `state:` IS NESTED AND ONLY ITS TOP LEVEL WAS CHECKED. A workflow writes
+            # `state: {adv: {evalue: 0.001}}`, and listing the dict yields `adv` alone -- so a typo
+            # in `evalue` was invisible, which is precisely the allow_tool_state_corrections hazard
+            # this script exists for: Galaxy downgrades the refusal to a server-side log line no
+            # API response exposes, and the job runs with a default nobody chose.
+            def state_keys(node, prefix=""):
+                for k, v in (node or {}).items():
+                    yield f"{prefix}{k}"
+                    if isinstance(v, dict):
+                        yield from state_keys(v, f"{prefix}{k}|")
+                    elif isinstance(v, list):
+                        for i, item in enumerate(v):
+                            if isinstance(item, dict):
+                                yield from state_keys(item, f"{prefix}{k}_{i}|")
+
+            for key_ in list(s.get("in") or {}) + list(state_keys(s.get("state"))):
                 if not addressable(key_, params):
                     bad("NO-SUCH-PARAM", f"{name}.{key_}",
                         f"{tid.split('/')[-2] if '/' in tid else tid} v{sch.get('version')} "

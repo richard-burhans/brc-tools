@@ -456,6 +456,12 @@ shell_command: |
     "| awk '/^>/{print;next}{print toupper($0)}' ", "") + """
   samtools faidx seq.fa &&
   cut -f1,2 seq.fa.fai > chrom.sizes &&
+  awk '/\\r/ && substr($0, length($0), 1) != "\\r" {
+      print "⛔ brc-samtools-faidx: a carriage return appears MID-LINE, so this FASTA has lone-CR (classic Mac) or mixed line endings." > "/dev/stderr"
+      print "   samtools splits records on a newline exactly as this awk does, so a > that follows a bare CR is invisible to BOTH: the record is swallowed into its predecessor, whose length then covers it, and the record-count guard below sees MATCHING counts and passes." > "/dev/stderr"
+      print "   Measured: a 3-record FASTA came out as a 2-row index with the second contig reported 18 bp long when it is 8, and the third absent entirely, exit 0." > "/dev/stderr"
+      print "   chrom.sizes is the bedtools genome file WF-C runs on -- an over-long contig lets intervals past its real end survive, and a missing one makes every interval on it vanish. REFUSING; convert the line endings first." > "/dev/stderr"
+      exit 1 }' seq.fa &&
   awk '/^>/ {n++} END {print n+0}' seq.fa > n_seq.txt &&
   awk 'END {print NR+0}' seq.fa.fai > n_fai.txt &&
   awk 'NR == FNR {a = $1; next} {b = $1} END {
