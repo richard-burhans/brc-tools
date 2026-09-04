@@ -447,7 +447,19 @@ shell_command: |
 """ + DECOMPRESS.replace("upper.fa", "seq.fa").replace(
     "| awk '/^>/{print;next}{print toupper($0)}' ", "") + """
   samtools faidx seq.fa &&
-  cut -f1,2 seq.fa.fai > chrom.sizes
+  cut -f1,2 seq.fa.fai > chrom.sizes &&
+  awk '/^>/ {n++} END {print n+0}' seq.fa > n_seq.txt &&
+  awk 'END {print NR+0}' seq.fa.fai > n_fai.txt &&
+  awk 'NR == FNR {a = $1; next} {b = $1} END {
+      if (a+0 == b+0) exit 0
+      print "⛔ brc-samtools-faidx: the FASTA holds " a " record(s) and the index " b " row(s)." > "/dev/stderr"
+      print "   samtools drops a record in two cases and NEITHER of them changes the exit code:" > "/dev/stderr"
+      print "   a DUPLICATE sequence name, which is warning-level only ([W::fai_insert_index]" > "/dev/stderr"
+      print "   Ignoring duplicate sequence), and a ZERO-LENGTH record, which says nothing at all." > "/dev/stderr"
+      print "   chrom.sizes is the bedtools genome file WF-C runs on, and a contig missing from a" > "/dev/stderr"
+      print "   genome file makes every interval on it vanish silently. REFUSING rather than" > "/dev/stderr"
+      print "   publishing a short index that looks complete." > "/dev/stderr"
+      exit 1 }' n_seq.txt n_fai.txt
 inputs:
   - name: input
     type: data

@@ -118,7 +118,22 @@ for path, name in zip(paths, ids):
     sig = f"stage/{name}.sig"
     subprocess.run(["sourmash", "sketch", "dna", "-p", f"k={a.ksize},scaled={a.scaled}",
                     "--name", name, "-o", sig, path], check=True)
-    print(f"sketched {name} <- {path}", file=sys.stderr)
+    # ⛔ AN EMPTY SKETCH IS INDISTINGUISHABLE FROM AN UNRELATED GENOME, AND sourmash SAYS NOTHING.
+    # At --scaled 1000 a small enough sequence contributes NO hashes: measured, a 500 bp assembly
+    # and 180 kb of N both sketched to 0 mins, and the similarity.csv that came out was
+    # BYTE-IDENTICAL to the run where that element was a genuine 200 kb unrelated genome -- row
+    # `0.0, 1.0, 0.0`, exit 0. So a panel member that failed upstream, or any small-genome member
+    # (an organelle, a plasmid, an apicoplast), reads as "shares nothing with anyone" and this
+    # matrix feeds WF-I's fold order. The count assertion above cannot see it; only the hashes can.
+    _n = sum(len(s.get("mins") or []) for rec in json.load(open(sig))
+             for s in (rec.get("signatures") or []))
+    if _n == 0:
+        sys.exit(f"{name} sketched to ZERO hashes at scaled={a.scaled}. Nothing is wrong with the "
+                 f"file as far as sourmash is concerned -- it is simply too small (or too masked) "
+                 f"to contribute a single hash at this resolution, and it would appear in the "
+                 f"matrix as a genome sharing nothing with anyone rather than as a failure. Drop "
+                 f"it from the panel, or lower --scaled.")
+    print(f"sketched {name} <- {path}  ({_n} hashes)", file=sys.stderr)
 
 sigs = [f"stage/{n}.sig" for n in ids]
 subprocess.run(["sourmash", "compare", "--ksize", a.ksize, "-o", "cmp", "--csv", "similarity.csv",
