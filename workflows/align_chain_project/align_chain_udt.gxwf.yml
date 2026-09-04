@@ -17,8 +17,9 @@ doc: >-
   from the classic file by exactly the two `chainStitchId` steps, which become the User-Defined Tool
   `brc-chain-stitch-id` (generated from `tools/chainStitchId/chainStitchId.xml`, held at
   `udt/chain_stitch_id.gxtool.yml`). Parity is mechanical rather than asserted: the two files have
-  identical `inputs`, identical `outputs`, the same step labels in the same order, and exactly two
-  steps whose content differs -- those two `tool_id`s.
+  identical `inputs`, identical `outputs`, the same step labels in the same order, and FIVE steps
+  whose content differs: those two `tool_id`s, plus three blocks of explicitly-named DEFAULT values
+  that change nothing about the run. The comment above `kegalign` says why they are named.
 
   ⚠ IT PINS TOOLSHED REVISIONS, WHERE THE WF-B UDT EDITION DELIBERATELY DOES NOT, and the
   difference is measured rather than stylistic. All eight ids here were resolved against
@@ -302,6 +303,37 @@ steps:
       out: {}
     position: {top: 170, left: 3951}
   rb_net:
+    # ⚠ THIS DELIBERATELY DIFFERS FROM UCSC's RECIPE, AND THE DIFFERENCE WAS MEASURED RATHER THAN
+    # ASSUMED. `doRecipBest.pl:149-153` pipes `chainPreNet | chainNet -minSpace=1 -minScore=0 |
+    # netSyntenic`; this step runs chainNet alone, on chainNet's own defaults (kent chainNet.c:18-20
+    # -- minSpace 25, minFill 12, minScore 2000). A review called that a silent loss of the whole
+    # point of a reciprocal-best net, since score filtering has already happened upstream. So it was
+    # measured, on real data, before anything was changed.
+    #
+    # Finola chr1 vs Purple Kush chr1, a 10 Mb homologous slice, both ~60% soft-masked as NCBI
+    # ships them, lastz with this workflow's own parameters -> axtChain -linearGap=loose -> three
+    # net variants -> netChainSubset (bench/data/chain-measure):
+    #
+    #   axtChain produced 13,657 chains, of which 2,134 (15.6%) score < 2000
+    #     A  this step as written                         2,336 chains   4,010,307 bp
+    #     B  chainPreNet + -minSpace=1 -minScore=0        21,380 chains   4,112,850 bp
+    #     C  chainPreNet, chainNet defaults                2,336 chains   4,010,307 bp
+    #
+    # TWO RESULTS, BOTH AGAINST CHANGING THIS:
+    #   * chainPreNet does NOTHING here. A and C are identical -- same chains, same bases. It is a
+    #     pruning optimisation and chainNet reaches the same answer without it, so its absence from
+    #     this branch costs nothing measurable.
+    #   * UCSC's flags buy 9x the chain RECORDS for 2.56% more aligned SEQUENCE, and every one of
+    #     the 19,044 extra chains is under 100 bp (mean 5.4 bp). Chains >= 1 kb: 812 vs 813.
+    #     Chains >= 10 kb: 44 vs 44. `minScore=2000` is not discarding syntenic blocks; it is
+    #     discarding gap fill. Nine times the chain records is nine times the work for TOGA2's
+    #     --chain_file, and this pipeline's complaint has been MISSING projections, not missing
+    #     5 bp fills.
+    #
+    # ⚠ WHAT THE MEASUREMENT DOES NOT COVER: one 10 Mb slice, one chromosome pair, two cultivars
+    # of ONE species -- a more divergent pair would leave more real sequence under the threshold --
+    # and it measured the FORWARD net, while this branch nets swapped chains. Same mechanism,
+    # different input. Re-measure before applying this workflow to a divergent panel.
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainnet/ucsc_chainnet/482+galaxy0
     in:
       in_chain: rb_sort1/out

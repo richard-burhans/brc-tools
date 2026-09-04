@@ -216,6 +216,13 @@ steps:
       out: {}
     position: {top: 170, left: 3951}
   rb_net:
+    # ⚠ DELIBERATELY NOT UCSC's RECIPE. `doRecipBest.pl` runs `chainPreNet | chainNet -minSpace=1
+    # -minScore=0 | netSyntenic`; this runs chainNet alone on its defaults (minScore 2000). Measured
+    # on Finola chr1 vs Purple Kush chr1, a 10 Mb slice: chainPreNet changes NOTHING (identical
+    # chains and bases with and without it), and UCSC's flags add 9x the chain records for 2.56%
+    # more aligned sequence, all of it in fragments under 100 bp -- chains >= 1 kb go 812 -> 813,
+    # chains >= 10 kb 44 -> 44. See the fuller note on the same step in `align_chain_udt.gxwf.yml`,
+    # including what the measurement does not cover.
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainnet/ucsc_chainnet/482+galaxy0
     in:
       in_chain: rb_sort1/out
