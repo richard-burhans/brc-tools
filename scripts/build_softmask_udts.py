@@ -177,7 +177,7 @@ XML_ANCHORS = {
                                             "-outfmt interval", "interval2bed.awk",
                                             "lc_classify.py", "toupper"],
     "tools/tantan/tantan.xml": ["tantan in.fa", "lc2bed.awk", "lc_classify.py", "toupper"],
-    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ANOtoBED", "ano2bed6.awk", "toupper"],
+    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ONEview", "ano2bed6.awk", "toupper"],
     "tools/masking_table/masking_table.xml": ["masking_table.py", "--dustmasker", "--union"],
 }
 
@@ -189,7 +189,12 @@ XML_REQUIREMENTS = {
     "tools/dustmasker/dustmasker.xml": {"blast": "2.17.0"},
     "tools/windowmasker/windowmasker.xml": {"blast": "2.17.0"},
     "tools/tantan/tantan.xml": {"tantan": "51"},
-    "tools/fastan/fastan.xml": {"fastan": "0.8"},
+    # ⚠ BOTH packages, because both are pinned in build(). `fastga` was left out, so the bump from
+    # 1.5 to 1.5.20260729 (commit a45e0a7, on this branch) sailed past assert_sources_aligned while
+    # `fastan_gdb` and `fastan_bed` kept their container -- the exact drift the header above claims
+    # this block covers, performed by this repo, on this file. It is not cosmetic: released fastga
+    # 1.5's ANOtoBED cannot open a .1ano written by fastan 0.8, which is why the bump happened.
+    "tools/fastan/fastan.xml": {"fastan": "0.8", "fastga": "1.5.20260729"},
     "tools/masking_table/masking_table.xml": {"python": "3.12"},
 }
 
@@ -357,7 +362,15 @@ def build() -> dict[str, str]:
 
     out["tantan_bed3.gxtool.yml"] = masker(
         "brc-tantan-bed3", "tantan -> BED3 (BRC UDT)",
-        "quay.io/biocontainers/tantan:51--h4ac6f70_0",
+        # ⛔ THIS TAG WAS A GUESS AND IT DOES NOT EXIST. `51--h4ac6f70_0`: quay reports zero tags
+        # for it and depot.galaxyproject.org 404s. The tool REGISTERS fine on usegalaxy.org --
+        # creating a UDT does not resolve its image -- so it fails only at job start, with
+        # `manifest unknown`, which means WF-B's UDT edition has never run end to end. The
+        # udt-authoring skill names guessing the `--<hash>_<build>` suffix as the single most
+        # common real UDT failure, and this is that failure. `51--h5ca1c30_1` is one of the two
+        # builds that actually exist (quay: 1 tag, depot: HTTP 200); check_udt_definitions.py
+        # --check-containers now asks, so a guess cannot ship again.
+        "quay.io/biocontainers/tantan:51--h5ca1c30_1",
         "tantan gentle low-complexity intervals, stage 1 of 2",
         "  tantan upper.fa | awk -f lc2bed.awk > intervals.bed3",
         "tools/tantan/lc2bed.awk", "lc2bed.awk")
@@ -450,15 +463,40 @@ description: Index a FASTA (.fai) and emit the chrom/length table bedtools wants
 container: quay.io/biocontainers/samtools:1.24--h9dcdb79_1
 shell_command: |
   set -o pipefail
-  cp '$(inputs.input.path)' seq.fa
-  samtools faidx seq.fa
-  cut -f1,2 seq.fa.fai > chrom.sizes
+""" + DECOMPRESS.replace("upper.fa", "seq.fa").replace(
+    "| awk '/^>/{print;next}{print toupper($0)}' ", "") + """
+  samtools faidx seq.fa &&
+  cut -f1,2 seq.fa.fai > chrom.sizes &&
+  awk '/\\r/ && substr($0, length($0), 1) != "\\r" {
+      print "⛔ brc-samtools-faidx: a carriage return appears MID-LINE, so this FASTA has lone-CR (classic Mac) or mixed line endings." > "/dev/stderr"
+      print "   samtools splits records on a newline exactly as this awk does, so a > that follows a bare CR is invisible to BOTH: the record is swallowed into its predecessor, whose length then covers it, and the record-count guard below sees MATCHING counts and passes." > "/dev/stderr"
+      print "   Measured: a 3-record FASTA came out as a 2-row index with the second contig reported 18 bp long when it is 8, and the third absent entirely, exit 0." > "/dev/stderr"
+      print "   chrom.sizes is the bedtools genome file WF-C runs on -- an over-long contig lets intervals past its real end survive, and a missing one makes every interval on it vanish. REFUSING; convert the line endings first." > "/dev/stderr"
+      exit 1 }' seq.fa &&
+  awk '/^>/ {n++} END {print n+0}' seq.fa > n_seq.txt &&
+  awk 'END {print NR+0}' seq.fa.fai > n_fai.txt &&
+  awk 'NR == FNR {a = $1; next} {b = $1} END {
+      if (a+0 == b+0) exit 0
+      print "⛔ brc-samtools-faidx: the FASTA holds " a " record(s) and the index " b " row(s)." > "/dev/stderr"
+      print "   samtools drops a record in two cases and NEITHER of them changes the exit code:" > "/dev/stderr"
+      print "   a DUPLICATE sequence name, which is warning-level only ([W::fai_insert_index]" > "/dev/stderr"
+      print "   Ignoring duplicate sequence), and a ZERO-LENGTH record, which says nothing at all." > "/dev/stderr"
+      print "   chrom.sizes is the bedtools genome file WF-C runs on, and a contig missing from a" > "/dev/stderr"
+      print "   genome file makes every interval on it vanish silently. REFUSING rather than" > "/dev/stderr"
+      print "   publishing a short index that looks complete." > "/dev/stderr"
+      exit 1 }' n_seq.txt n_fai.txt
 inputs:
   - name: input
     type: data
-    format: fasta
+    format: fasta,fasta.gz
     label: FASTA to index
-    help: plain FASTA. samtools faidx accepts bgzip but NOT ordinary gzip.
+    help: >-
+      Plain or gzipped. ⛔ samtools faidx CANNOT index ordinary gzip -- it accepts bgzip and
+      nothing else -- so a .gz input is decompressed first rather than passed through. Handed one
+      directly it fails with "Cannot index files compressed with gzip, please use bgzip", once per
+      element, which is what WF-A did on an NCBI assembly collection: NCBI ships .gz, and unlike
+      WF-B (where this step reads the already-decompressed output of brc-fasta-uppercase) WF-A
+      indexes the raw assemblies.
 outputs:
   - name: output
     type: data
@@ -502,8 +540,8 @@ description: Convert a FASTA to a FastGA GDB, stage 1 of 3 for the fastan tandem
 container: quay.io/biocontainers/fastga:1.5.20260729--h118bc1c_0
 shell_command: |
   set -o pipefail
-  cp '$(inputs.input.path)' up.fa
-  FAtoGDB up.fa gdb
+  cp '$(inputs.input.path)' up.fa &&
+  FAtoGDB up.fa gdb &&
   tar cf gdb.tar gdb.1gdb .gdb.bps
 inputs:
   - name: input
@@ -541,8 +579,8 @@ description: Find tandem arrays in a GDB, stage 2 of 3
 container: quay.io/biocontainers/fastan:0.8--h118bc1c_1
 shell_command: |
   set -o pipefail
-  cp '$(inputs.gdb.path)' gdb.tar
-  tar xf gdb.tar
+  cp '$(inputs.gdb.path)' gdb.tar &&
+  tar xf gdb.tar &&
   FasTAN -m -p -T1 -oscan gdb
 inputs:
   - name: gdb
@@ -596,8 +634,8 @@ shell_command: |
 {indent(awk_ano)}
   BRC_AWK
   set -o pipefail
-  cp '$(inputs.ano.path)' scan.1ano
-  ANOtoBED scan.1ano | {{ grep -v '^#' || [ $? -eq 1 ]; }} | awk -f ano2bed6.awk \\
+  cp '$(inputs.ano.path)' scan.1ano &&
+  ONEview scan.1ano | awk -f ano2bed6.awk \\
     | LC_ALL=C sort -k1,1 -k2,2n > annotated.bed6
 inputs:
   - name: ano
@@ -649,7 +687,7 @@ shell_command: |
     --tantan "s=$(inputs.tantan.path)" \\
     --fastan "s=$(inputs.fastan.path)" \\
     --union "s=$(inputs.union.path)" \\
-    --out full.tabular
+    --out full.tabular &&
   tail -n +2 full.tabular | cut -f2- > row.tabular
 inputs:
   - name: dustmasker
@@ -707,7 +745,7 @@ description: Prepend the Sample/masker header to the collapsed per-strain rows
 container: quay.io/biocontainers/python:3.12
 shell_command: |
   set -o pipefail
-  printf 'Sample\\tdustmasker\\twindowmasker\\ttantan\\tfastan\\tunion\\n' > table.tabular
+  printf 'Sample\\tdustmasker\\twindowmasker\\ttantan\\tfastan\\tunion\\n' > table.tabular &&
   cat '$(inputs.rows.path)' >> table.tabular
 inputs:
   - name: rows
@@ -809,7 +847,35 @@ def main() -> int:
     # regenerate as instructed, and the OLD one is left behind still referenced by the workflow.
     generated = set(build())
     on_disk = {p.name for p in UDT.glob("*.gxtool.yml")}
-    orphans = sorted(on_disk - generated - HAND_WRITTEN_UDTS)
+    # ⚠ A CONVERTED UDT IS NOT AN ORPHAN, IT IS CHECKED SOMEWHERE ELSE. udt/ also holds documents
+    # emitted by the fork-side converter, which stamps each one with a `# provenance:` block naming
+    # its source wrapper and the hashes of that wrapper's <command> and macros.xml.
+    # scripts/check_udt_provenance.py verifies those with the standard library. This exemption is
+    # DERIVED from the stamp rather than listed by hand, so a new converted UDT needs no edit here
+    # -- and the count is printed, so "no orphans" can never quietly mean "nothing was examined".
+    # ⚠ AND A UDT FROM ANOTHER GENERATOR IS NOT AN ORPHAN EITHER. `build_inventory_udts.py` emits
+    # the WF-A bookkeeping tools and carries its own --check. Both exemptions are DERIVED from what
+    # the file says about itself -- a `# provenance:` stamp, or a "GENERATED by" line naming a
+    # different generator -- so neither needs an edit here when a new one is added.
+    converted = set()
+    for path in UDT.glob("*.gxtool.yml"):
+        head = path.read_text(encoding="utf-8")[:600]
+        if "# provenance:" in head or ("GENERATED by scripts/" in head and "build_softmask_udts.py" not in head.split("\n")[0]):
+            converted.add(path.name)
+    if converted:
+        print(f"  {len(converted)} UDT(s) checked elsewhere (provenance stamp or another "
+              f"generator): {', '.join(sorted(converted))}")
+    # ⛔ MEMBERSHIP IS ONLY EVER SUBTRACTED, SO A DECLARED FILE THAT NO LONGER EXISTS IS INVISIBLE.
+    # Deleting a hand-written UDT left --check green and still printing "4 hand-written", because
+    # that number is len(HAND_WRITTEN_UDTS) -- a set size, not a disk count. The orphan check's own
+    # rationale is that "no orphans" should be a real statement; it was vacuous in this direction.
+    missing = sorted(HAND_WRITTEN_UDTS - on_disk)
+    if missing:
+        sys.exit(f"REFUSING: {len(missing)} UDT(s) are declared HAND_WRITTEN but absent from "
+                 f"udt/: {missing}. Either the file was deleted and the entry should go with it, "
+                 f"or the entry is a typo and the real file is an unchecked orphan.")
+
+    orphans = sorted(on_disk - generated - HAND_WRITTEN_UDTS - converted)
     if orphans:
         for fn in orphans:
             print(f"  ORPHAN udt/{fn} — on disk, not produced by build(), never checked")
@@ -824,7 +890,7 @@ def main() -> int:
             print("  Regenerate with: python3 scripts/build_softmask_udts.py")
             return 1
         print(f"  all committed UDTs match their sources ({len(generated)} generated, "
-              f"{len(HAND_WRITTEN_UDTS)} hand-written)")
+              f"{len(HAND_WRITTEN_UDTS)} hand-written, {len(converted)} converted)")
     return 0
 
 
