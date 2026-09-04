@@ -7,14 +7,16 @@ name: udt-drift
 on:
   push:
     branches: [main]
-    # ⚠ THE TRIGGER HAS TO NAME THE CHECKERS TOO, or a change that breaks one of them runs
-    # no check at all -- and `workflows/**` matters because the port checker reads those.
+    # ⚠ THE TRIGGER HAS TO NAME EVERY SCRIPT THE JOBS BELOW RUN, or a change that breaks one of
+    # them runs no check at all -- and `workflows/**` matters because the port checker reads those.
     paths: ['tools/**', 'udt/**', 'workflows/**',
-            'scripts/build_softmask_udts.py', 'scripts/check_udt_definitions.py',
+            'scripts/build_softmask_udts.py', 'scripts/build_inventory_udts.py',
+            'scripts/check_udt_provenance.py', 'scripts/check_udt_definitions.py',
             'scripts/check_workflow_ports.py', 'scripts/check_coordinates.py']
   pull_request:
     paths: ['tools/**', 'udt/**', 'workflows/**',
-            'scripts/build_softmask_udts.py', 'scripts/check_udt_definitions.py',
+            'scripts/build_softmask_udts.py', 'scripts/build_inventory_udts.py',
+            'scripts/check_udt_provenance.py', 'scripts/check_udt_definitions.py',
             'scripts/check_workflow_ports.py', 'scripts/check_coordinates.py']
 
 jobs:
@@ -38,6 +40,11 @@ jobs:
       # changes the container a UDT pins while leaving the tool XML byte-identical.
       - name: Converted UDTs match their source wrappers
         run: python3 scripts/check_udt_provenance.py
+
+      # The WF-A bookkeeping UDTs inline their Python from tools/ verbatim; this is what stops the
+      # inlined copy and the wrapper's own helper from drifting apart.
+      - name: Inventory UDTs match their helpers
+        run: python3 scripts/build_inventory_udts.py --check
   # The generator checks above ask "does udt/ match its sources?". This one asks a different
   # question -- "are these tools CORRECT?" -- against the udt-authoring skill's schema, templating
   # and common-mistakes references, plus the silent-success cases found by attacking the tools with
