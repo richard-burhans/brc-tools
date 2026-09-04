@@ -5,8 +5,11 @@ doc: >-
   installed on the BRC instance and 404 on .org -- sourmash_sketch, sourmash_compare,
   collection_self_pairs, collection_relabel_map, samtools_faidx and anchor_prep -- so the workflow
   imports there and cannot be invoked. This edition addresses each of them with a User-Defined Tool
-  and leaves the three that already run (busco, multiqc, and the identifier extraction) as stock
-  tools.
+  and leaves the TWO that already run -- `busco` and `multiqc` -- as stock tools. The classic's
+  ninth step, `Cut1` over the .fai, is not "left" but DELETED: `brc-samtools-faidx` emits
+  `chrom.sizes` itself. The identifier extraction (`collection_element_identifiers`) is a NEW stock
+  step, not one of the classic's nine. Eight steps against nine, which is a smaller graph and not a
+  larger one: see the output accounting below for where this edition does less.
 
   ⛔ ONE CLASSIC OUTPUT IS NOT REPRODUCED, AND THAT IS A REAL GAP RATHER THAN AN OVERSIGHT. The
   classic workflow publishes `signatures`, the per-strain sourmash .sig files, described in its own
@@ -17,6 +20,11 @@ doc: >-
   So the output sets differ in three places, not one: this edition LOSES `signatures` and ADDS
   `panel_identifiers` (the list three steps are keyed on, published so a reader can see it) and
   `fasta_index` (the .fai the faidx UDT emits anyway, which the classic computed and discarded).
+  ⚠ READ `fasta_index` FOR NAMES AND LENGTHS ONLY. Its byte OFFSETS describe `seq.fa` -- the
+  decompressed copy the UDT makes in its work dir, because samtools faidx cannot index ordinary
+  gzip and NCBI ships .gz -- and that file is not published. Pairing this .fai with the input
+  assembly and seeking into it gives garbage. `sizes` (columns 1-2) is unaffected and is the output
+  the rest of the pipeline consumes.
   Twelve outputs against the classic's eleven, and the one that is missing is named above rather
   than left for somebody to notice.
 
@@ -27,18 +35,29 @@ doc: >-
   so the list is derived here instead of being asked of the user.
 
 creator:
+  # ⚠ THE SAME THREE THE SIBLING PORTS CARRY, WITH THE ORCIDs. A port collapsing this to one
+  # identifier-less "Person" named after an organisation drops the only machine-readable
+  # attribution the format has, and models a project as a human being.
   - class: Person
-    name: BRC pipeline
+    identifier: https://orcid.org/0000-0002-5987-8032
+    name: Anton Nekrutenko
+  - class: Person
+    identifier: https://orcid.org/0009-0006-5949-0958
+    name: Richard Burhans
+  - class: Person
+    name: Claude Opus 4.8
 license: MIT
 release: "0.1"
 
 inputs:
   assemblies:
     type: collection
+    collection_type: list
     doc: Per-strain assembly FASTAs. Element identifier = strain name.
     position: {top: 100, left: 40}
   proteomes:
     type: collection
+    collection_type: list
     doc: >-
       Per-strain protein FASTAs, parallel to assemblies and keyed by strain. BUSCO runs -m prot, so
       it MUST map over proteins, not assemblies.
@@ -56,6 +75,7 @@ inputs:
     position: {top: 360, left: 40}
   anchor_gene_gff3s:
     type: collection
+    collection_type: list
     doc: >-
       Curated gene GFF3 for each anchor, keyed by anchor name. A SUBSET of the panel, so this
       collection is shorter than assemblies.
@@ -169,11 +189,41 @@ steps:
       image_content_input:
         - sourmash_panel/heatmap
         - sourmash_panel/dendrogram
+    state:
+      # ⛔ THE REPEAT INSTANCE MUST BE DECLARED OR THE CONNECTION HAS NOTHING TO ATTACH TO.
+      # `results_0|…` addresses instance 0 of the `results` repeat, and a repeat has no default
+      # instance -- run_udt_workflow's `_fill` skips repeats explicitly ("a repeat has no default
+      # instance to invent"). Without this block `software` is unset, so MultiQC either refuses the
+      # invocation or parses the BUSCO summaries under the wrong module and qc_report comes out
+      # empty. The classic workflow and both softmask editions all carry it.
+      results:
+        - software_cond:
+            software: busco
 
   # ---- the bookkeeping half ---------------------------------------------------------------------
   panel_self_pairs:
     tool_id: brc-self-pairs
     label: panel_self_pairs
+    # ⚠ THE NAMES AND TAGS ARE THE HANDOFF, AND BOTH HALVES ARE LOAD-BEARING.
+    #   * `name:` IS NOT DECORATION. `AUTO_PROPAGATED_TAGS = ["name"]` (lib/galaxy/model/__init__.py)
+    #     is the only tag set copied onto a job's outputs, so a PLAIN tag sticks to the WF-A dataset
+    #     and does not follow the data into WF-C/WF-C2 -- nor render as a #hashtag. Restoring these
+    #     five actions without the prefix, as a first pass did, keeps the shape and loses the point.
+    #   * THE RENAME STRINGS ARE THE WF-C2 INPUT NAMES, character for character
+    #     (project_annotations.gxwf.yml: `anchor_bed12s`, `anchor_isoforms`). Restyling one to read
+    #     nicely -- "anchor BED12" -- leaves an operator matching a name that exists nowhere. Everything this workflow emits for WF-C and WF-C2 is
+    # staged by id from the history, and without these the operator picks collections out by
+    # POSITION. The classic workflow carries all five; dropping them silently made this edition
+    # harder to use than the thing it ports.
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'WF-C input: self_pairs'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: name:wfc_self_pairs}
     position: {top: 460, left: 640}
     doc: One {id}_{id} line per identifier — the self-cross diagonal WF-C drops.
     in:
@@ -182,6 +232,15 @@ steps:
   panel_relabel_map:
     tool_id: brc-relabel-map
     label: panel_relabel_map
+    post_job_actions:
+      RenameDatasetActionoutput:
+        action_type: RenameDatasetAction
+        output_name: output
+        action_arguments: {newname: 'WF-C input: relabel_map'}
+      TagDatasetActionoutput:
+        action_type: TagDatasetAction
+        output_name: output
+        action_arguments: {tags: name:wfc_relabel_map}
     position: {top: 560, left: 640}
     doc: "{a}_{b}<TAB>{a}.{b} for every ordered pair, to rename WF-C's cross-product cells."
     in:
@@ -190,6 +249,15 @@ steps:
   panel_faidx:
     tool_id: brc-samtools-faidx
     label: panel_faidx
+    post_job_actions:
+      RenameDatasetActionsizes:
+        action_type: RenameDatasetAction
+        output_name: sizes
+        action_arguments: {newname: 'WF-C input: sizes'}
+      TagDatasetActionsizes:
+        action_type: TagDatasetAction
+        output_name: sizes
+        action_arguments: {tags: name:wfc_sizes}
     position: {top: 660, left: 640}
     doc: >-
       Index each assembly. ⚠ Emits the chrom/length table as its OWN second output, which is why
@@ -202,6 +270,23 @@ steps:
   anchor_prep:
     tool_id: brc-anchor-prep
     label: anchor_prep
+    post_job_actions:
+      RenameDatasetActionbed12:
+        action_type: RenameDatasetAction
+        output_name: bed12
+        action_arguments: {newname: 'WF-C2 input: anchor_bed12s'}
+      TagDatasetActionbed12:
+        action_type: TagDatasetAction
+        output_name: bed12
+        action_arguments: {tags: name:wfc2_anchor_bed12}
+      RenameDatasetActionisoforms:
+        action_type: RenameDatasetAction
+        output_name: isoforms
+        action_arguments: {newname: 'WF-C2 input: anchor_isoforms'}
+      TagDatasetActionisoforms:
+        action_type: TagDatasetAction
+        output_name: isoforms
+        action_arguments: {tags: name:wfc2_anchor_isoforms}
     position: {top: 800, left: 640}
     doc: >-
       Per-anchor BED12 + isoforms table, from one GFF3 in one job. ⛔ Drops organellar features whose
