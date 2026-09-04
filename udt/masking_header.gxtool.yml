@@ -8,7 +8,7 @@ description: Prepend the Sample/masker header to the collapsed per-strain rows
 container: quay.io/biocontainers/python:3.12
 shell_command: |
   set -o pipefail
-  printf 'Sample\tdustmasker\twindowmasker\ttantan\tfastan\tunion\n' > table.tabular
+  printf 'Sample\tdustmasker\twindowmasker\ttantan\tfastan\tunion\n' > table.tabular &&
   cat '$(inputs.rows.path)' >> table.tabular
 inputs:
   - name: rows
