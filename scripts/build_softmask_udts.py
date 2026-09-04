@@ -204,7 +204,27 @@ DUPLICATED_HELPERS = (
 )
 
 #: Content-duplicate files that are NOT inlined helpers, so divergence between them is harmless.
-DUPLICATE_ALLOWLIST = {("tools/sourmash_compare/macros.xml", "tools/sourmash_sketch/macros.xml")}
+#:
+#: ⚠ THIS LIST IS WHY `--check` IS CURRENTLY RED ON main, AND THE GUARD IS RIGHT. The Cyclospora
+#: work landed `build_hds_sheet.py` in two places -- byte-identical -- and `assert_no_new_duplicates`
+#: refuses any content-duplicate it has not been told about, on the ground that a fix applied to
+#: one copy would never reach a UDT inlining the other. Neither copy IS inlined into a UDT
+#: (`grep -rl build_hds_sheet udt/` finds nothing), so by the refusal's own instruction they belong
+#: here rather than in DUPLICATED_HELPERS. Declaring them says "these two are allowed to be the
+#: same file"; it does not say they are allowed to DIVERGE, which is a question for whoever owns
+#: the Cyclospora tools.
+DUPLICATE_ALLOWLIST = {
+    ("tools/sourmash_compare/macros.xml", "tools/sourmash_sketch/macros.xml"),
+    # The Cyclospora tools each keep the caller beside its wrapper AND under scripts/. All three
+    # pairs are byte-identical today and none is inlined into a UDT (`grep -rl <name> udt/` finds
+    # nothing for any of them), so they are declared rather than added to DUPLICATED_HELPERS.
+    ("tools/cyclospora/cyclospora_build_sheet/build_hds_sheet.py",
+     "tools/cyclospora/scripts/build_hds_sheet.py"),
+    ("tools/cyclospora/cyclospora_junction_caller/junction_caller.py",
+     "tools/cyclospora/scripts/junction_caller.py"),
+    ("tools/cyclospora/cyclospora_part_caller/part_haplotype_caller.py",
+     "tools/cyclospora/scripts/part_haplotype_caller.py"),
+}
 
 
 def command_text(xml_path: pathlib.Path) -> str:
