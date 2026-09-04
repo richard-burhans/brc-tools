@@ -34,7 +34,7 @@ Usage:  python scripts/fetch_mt_dataset.py [--out MT]
 """
 import argparse
 import json
-import os
+import pathlib
 import subprocess
 import sys
 import time
@@ -79,7 +79,7 @@ def api(path, tries=3):
         try:
             return json.loads(subprocess.check_output(
                 ["curl", "-sS", "--max-time", "60", f"{API}{path}"]))
-        except Exception as e:
+        except Exception:
             if i == tries - 1:
                 raise
             time.sleep(2 * (i + 1))
@@ -116,34 +116,33 @@ def symbols_for(rows):
 
 
 def write_fasta(path, name, dna, width=60):
-    with open(path, "w") as fh:
-        fh.write(f">{name}\n")
-        for i in range(0, len(dna), width):
-            fh.write(dna[i:i + width] + "\n")
+    body = "".join(dna[i:i + width] + "\n" for i in range(0, len(dna), width))
+    pathlib.Path(path).write_text(f">{name}\n{body}")
 
 
 def write_gff3(path, db, chrom, length, rows, symbols):
-    with open(path, "w") as fh:
-        fh.write("##gff-version 3\n")
-        fh.write(f"##sequence-region {chrom} 1 {length}\n")
-        for r, sym in zip(rows, symbols):
-            gid = f"{db}_{sym}"
-            tid = f"{gid}_t1"
-            s, e, strand = r["txStart"] + 1, r["txEnd"], r["strand"]
-            fh.write(f"{chrom}\tUCSC\tgene\t{s}\t{e}\t.\t{strand}\t.\t"
-                     f"ID={gid};Name={sym}\n")
-            fh.write(f"{chrom}\tUCSC\tmRNA\t{s}\t{e}\t.\t{strand}\t.\t"
-                     f"ID={tid};Parent={gid};Name={sym}\n")
-            starts = [int(x) for x in r["exonStarts"].rstrip(",").split(",")]
-            ends = [int(x) for x in r["exonEnds"].rstrip(",").split(",")]
-            cds_s, cds_e = r["cdsStart"], r["cdsEnd"]
-            for i, (xs, xe) in enumerate(zip(starts, ends), 1):
-                fh.write(f"{chrom}\tUCSC\texon\t{xs + 1}\t{xe}\t.\t{strand}\t.\t"
-                         f"ID={tid}.exon{i};Parent={tid}\n")
-                cs, ce = max(xs, cds_s), min(xe, cds_e)
-                if cs < ce:
-                    fh.write(f"{chrom}\tUCSC\tCDS\t{cs + 1}\t{ce}\t.\t{strand}\t0\t"
-                             f"ID={tid}.cds{i};Parent={tid}\n")
+    out = ["##gff-version 3\n", f"##sequence-region {chrom} 1 {length}\n"]
+    # ⚠ `strict=True`: `symbols_for(rows)` returns exactly one symbol per row, so a length
+    # mismatch is a bug rather than a shorter file, and zip's default would hide it.
+    for r, sym in zip(rows, symbols, strict=True):
+        gid = f"{db}_{sym}"
+        tid = f"{gid}_t1"
+        s, e, strand = r["txStart"] + 1, r["txEnd"], r["strand"]
+        out.append(f"{chrom}\tUCSC\tgene\t{s}\t{e}\t.\t{strand}\t.\t"
+                 f"ID={gid};Name={sym}\n")
+        out.append(f"{chrom}\tUCSC\tmRNA\t{s}\t{e}\t.\t{strand}\t.\t"
+                 f"ID={tid};Parent={gid};Name={sym}\n")
+        starts = [int(x) for x in r["exonStarts"].rstrip(",").split(",")]
+        ends = [int(x) for x in r["exonEnds"].rstrip(",").split(",")]
+        cds_s, cds_e = r["cdsStart"], r["cdsEnd"]
+        for i, (xs, xe) in enumerate(zip(starts, ends, strict=True), 1):
+            out.append(f"{chrom}\tUCSC\texon\t{xs + 1}\t{xe}\t.\t{strand}\t.\t"
+                     f"ID={tid}.exon{i};Parent={tid}\n")
+            cs, ce = max(xs, cds_s), min(xe, cds_e)
+            if cs < ce:
+                out.append(f"{chrom}\tUCSC\tCDS\t{cs + 1}\t{ce}\t.\t{strand}\t0\t"
+                         f"ID={tid}.cds{i};Parent={tid}\n")
+    pathlib.Path(path).write_text("".join(out))
 
 
 def main():
@@ -151,44 +150,54 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="MT")
     a = ap.parse_args()
-    root = os.path.abspath(a.out)
-    os.makedirs(os.path.join(root, "fasta"), exist_ok=True)
-    os.makedirs(os.path.join(root, "gff3"), exist_ok=True)
+    # ⚠ `root` IS A Path NOW, AND EVERY RECEIVER WAS CHECKED. write_fasta and write_gff3 both go
+    # through `pathlib.Path(path)`, so they take either -- which is the check PTH123 does not do
+    # for you, and skipping it is what turned an autofix in #27 into "'str' object has no
+    # attribute 'open'".
+    root = pathlib.Path(a.out).resolve()
+    (root / "fasta").mkdir(parents=True, exist_ok=True)
+    (root / "gff3").mkdir(parents=True, exist_ok=True)
 
     manifest, truth, failed = [], [], []
     for label, db in SPECIES:
         try:
             chrom, length = mt_name(db)
             if not chrom:
-                failed.append((label, db, "no chrM")); continue
+                failed.append((label, db, "no chrM"))
+                continue
             track, rows = coding_genes(db, chrom)
             if not rows:
-                failed.append((label, db, "no coding genes")); continue
+                failed.append((label, db, "no coding genes"))
+                continue
             seq = api(f"/getData/sequence?genome={db};chrom={chrom}").get("dna", "")
             if len(seq) != length:
-                failed.append((label, db, f"sequence {len(seq)} != {length}")); continue
+                failed.append((label, db, f"sequence {len(seq)} != {length}"))
+                continue
             syms, inferred = symbols_for(rows)
-            write_fasta(os.path.join(root, "fasta", f"{label}.fa"), chrom, seq)
-            write_gff3(os.path.join(root, "gff3", f"{label}.gff3"), db, chrom, length, rows, syms)
+            write_fasta(root / "fasta" / f"{label}.fa", chrom, seq)
+            write_gff3(root / "gff3" / f"{label}.gff3", db, chrom, length, rows, syms)
             manifest.append((label, db, chrom, length, len(rows), track,
                              "inferred" if inferred else "from-track"))
-            for r, sym in zip(rows, syms):
+            for r, sym in zip(rows, syms, strict=True):
                 truth.append((label, f"{db}_{sym}", sym, r["txStart"] + 1, r["txEnd"],
                               r["strand"], "inferred" if inferred else "from-track"))
             print(f'  {label:11} {db:10} {chrom} {length:>6} bp  {len(rows)} genes  '
                   f'{track}{"  (symbols inferred from order)" if inferred else ""}')
-        except Exception as e:
+        # ⚠ A DELIBERATE PER-SPECIES BOUNDARY: one assembly failing must not abandon the other
+        # sixteen, and every failure is recorded and printed, never swallowed. ruff.toml's own
+        # comment names an inline noqa with the rationale as the way to keep one of these.
+        except Exception as e:  # noqa: BLE001 -- recorded in `failed` and printed below
             failed.append((label, db, str(e)[:60]))
             print(f'  {label:11} {db:10} FAILED: {e}', file=sys.stderr)
 
-    with open(os.path.join(root, "manifest.tsv"), "w") as fh:
-        fh.write("species\tassembly\tchrom\tlength\tn_genes\ttrack\tsymbol_source\n")
-        for row in manifest:
-            fh.write("\t".join(str(x) for x in row) + "\n")
-    with open(os.path.join(root, "ground_truth.tsv"), "w") as fh:
-        fh.write("species\tgene_id\tsymbol\tstart\tend\tstrand\tsymbol_source\n")
-        for row in truth:
-            fh.write("\t".join(str(x) for x in row) + "\n")
+    def tsv(name, header, rows):
+        (root / name).write_text(header + "".join("\t".join(str(x) for x in r) + "\n"
+                                                  for r in rows))
+
+    tsv("manifest.tsv", "species\tassembly\tchrom\tlength\tn_genes\ttrack\tsymbol_source\n",
+        manifest)
+    tsv("ground_truth.tsv", "species\tgene_id\tsymbol\tstart\tend\tstrand\tsymbol_source\n",
+        truth)
 
     print(f"\n{len(manifest)} species written to {root}")
     if failed:
