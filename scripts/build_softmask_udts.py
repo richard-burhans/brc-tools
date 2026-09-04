@@ -157,6 +157,11 @@ MASKER_COLUMNS = ("dustmasker", "windowmasker", "tantan", "fastan", "union")
 #: UDTs that live in udt/ but are deliberately NOT generated, with the reason.
 #: ⚠ Anything here is exempt from the staleness check, so the list should stay short.
 HAND_WRITTEN_UDTS = frozenset({
+    # The anchor half of WF-A. Hand-written because its awk is not a helper under tools/ that this
+    # generator inlines -- it is a reimplementation of tools/anchor_prep/build_anchor_inputs.py,
+    # verified byte-identical against it rather than generated from it. Left undeclared it is an
+    # ORPHAN to --check, which turns udt-drift red on every PR touching udt/**.
+    "anchor_prep.gxtool.yml",
     # A diagnostic, not part of the workflow: it dumps the job container's environment so the
     # platform claims in these tools' help text rest on a measurement. Nothing generates it because
     # nothing in tools/ corresponds to it.
@@ -818,6 +823,16 @@ def main() -> int:
     if converted:
         print(f"  {len(converted)} UDT(s) checked elsewhere (provenance stamp or another "
               f"generator): {', '.join(sorted(converted))}")
+    # ⛔ MEMBERSHIP IS ONLY EVER SUBTRACTED, SO A DECLARED FILE THAT NO LONGER EXISTS IS INVISIBLE.
+    # Deleting a hand-written UDT left --check green and still printing "4 hand-written", because
+    # that number is len(HAND_WRITTEN_UDTS) -- a set size, not a disk count. The orphan check's own
+    # rationale is that "no orphans" should be a real statement; it was vacuous in this direction.
+    missing = sorted(HAND_WRITTEN_UDTS - on_disk)
+    if missing:
+        sys.exit(f"REFUSING: {len(missing)} UDT(s) are declared HAND_WRITTEN but absent from "
+                 f"udt/: {missing}. Either the file was deleted and the entry should go with it, "
+                 f"or the entry is a typo and the real file is an unchecked orphan.")
+
     orphans = sorted(on_disk - generated - HAND_WRITTEN_UDTS - converted)
     if orphans:
         for fn in orphans:

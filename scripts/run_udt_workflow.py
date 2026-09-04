@@ -124,7 +124,13 @@ def fill_step_defaults(gi: GalaxyInstance, native: dict) -> None:
             continue
         try:
             spec = gi.tools.show_tool(tool_id, io_details=True)
-        except Exception as exc:                       # a UDT is not in /api/tools at all
+        # ⚠ A DELIBERATE BROAD-EXCEPT BOUNDARY, which is the one case ruff.toml's own comment
+        # anticipates ("those sites carry an inline noqa with the rationale"). A UDT is registered
+        # per-user and is not in /api/tools at ALL, so show_tool 404s for every `brc-*` id -- and
+        # a 404 here is expected, not a failure: the step simply keeps the state the workflow
+        # names. Narrowing this to HTTPError would still swallow the same case while letting a
+        # transport error abort a render that has already resolved every other step.
+        except Exception as exc:  # noqa: BLE001 -- see above; the message is printed, never swallowed
             print(f"    {tool_id}: defaults not fetched ({str(exc)[:40]})")
             continue
         state = json.loads(step["tool_state"])
@@ -229,6 +235,9 @@ def main() -> int:
     ap.add_argument("--workflow", type=pathlib.Path, required=True)
     ap.add_argument("--input", action="append", default=[], metavar="LABEL=SRC:ID",
                     help="bind a workflow input to an existing collection or dataset")
+    ap.add_argument("--param", action="append", default=[], metavar="LABEL=VALUE",
+                    help="bind a non-dataset workflow input (type: string/integer/boolean) to a "
+                         "literal value")
     ap.add_argument("--upload", action="append", default=[], metavar="LABEL=PATH",
                     help="upload a file into the run history and bind it to that input")
     ap.add_argument("--history-name")
@@ -257,6 +266,17 @@ def main() -> int:
     print(f"  history {gi.base_url}/histories/view?id={history['id']}")
 
     inputs = dict(parse_input(s) for s in args.input)
+    # ⛔ A WORKFLOW WITH A PARAMETER INPUT COULD NOT BE RUN BY THIS SCRIPT AT ALL. parse_input only
+    # accepts hdca:/hda:, so a `type: string` input -- WF-A's `busco_lineage` is the first in this
+    # repository -- had no binding and the invocation failed on a missing input. A parameter is
+    # passed as its LITERAL VALUE, not wrapped in a src/id dict; wrapping it makes Galaxy report a
+    # much later and far less obvious scheduling error.
+    for spec in args.param:
+        label, sep, value = spec.partition("=")
+        if not sep:
+            sys.exit(f"--param {spec!r}: expected label=value")
+        inputs[label] = value
+        print(f"  param {label} = {value!r}")
     for spec in args.upload:
         label, _, path = spec.partition("=")
         up = gi.tools.upload_file(path, history["id"])
