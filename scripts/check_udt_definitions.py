@@ -64,6 +64,12 @@ GROUP_TYPES = {"conditional", "repeat", "section"}
 XML_TYPES = {"hidden", "drill_down", "data_column", "genomebuild", "group_tag", "baseurl",
              "rules", "directory"}
 SCALAR_TYPES = {"boolean", "integer", "float", "text", "select", "color"}
+#: What a `data` input actually renders as -- a CWL-style File record. Anything else after the dot
+#: evaluates to `undefined`, which interpolates as the literal string and the command then runs on
+#: a path that does not exist. `$(inputs.reads.pth)` is the whole failure, and testing only that
+#: SOMETHING followed the dot let it through.
+FILE_FIELDS = {"path", "basename", "nameroot", "nameext", "class", "location", "size", "format",
+               "checksum", "secondaryFiles", "contents", "dirname"}
 #: A `pattern` discovery entry has no defaults in the model: all nine or it fails validation.
 DISCOVER_KEYS = {"discover_via", "pattern", "directory", "format", "visible", "recurse",
                  "match_relative_path", "assign_primary_output", "sort_key", "sort_comp"}
@@ -395,16 +401,53 @@ def lint(path):                                     # this IS a checklist; it is
             continue
         node = declared[ref]
         t, rest = node.get("type"), expr[m.end():]
+        # ⚠ THE WHOLE EXPRESSION, NOT JUST ITS FIRST WORD. `$(inputs.family_list ? "--family-list
+        # '" + inputs.family_list.path + "'" : "")` is the documented way to make an optional data
+        # input into a flag, and reading only the head of it reported four DATA-NO-PATH problems
+        # against correct code. A bare `inputs.X` with NOTHING after it is the mistake; an
+        # expression that goes on to do something is the author's business.
+        tail = rest.strip()
+        bare = not tail.startswith(".")
         if t == "data" and not node.get("multiple"):
-            if not rest.startswith("."):
+            if bare and not tail:
                 bad("DATA-NO-PATH", f"`$(inputs.{ref})` on a `data` input renders the whole File "
                                     f"OBJECT, not a path. Write `$(inputs.{ref}.path)`.", at)
+            elif tail.startswith("."):
+                # ⛔ AND THE FIELD HAS TO EXIST. `.startswith(".")` alone accepted
+                # `$(inputs.input.pth)`, which evaluates to undefined and hands the command a path
+                # that is not there -- the exact failure DATA-NO-PATH was written for, one typo to
+                # the right of where it was looking.
+                field = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)", tail)
+                if field and field.group(1) not in FILE_FIELDS:
+                    bad("NO-SUCH-FILE-FIELD",
+                        f"`$(inputs.{ref}.{field.group(1)})`: a `data` input renders a File record, "
+                        f"which has no `{field.group(1)}`. It evaluates to undefined and the "
+                        f"command runs on a path that does not exist. Fields: "
+                        f"{sorted(FILE_FIELDS)}.", at)
         elif t == "data" and node.get("multiple"):
-            if rest.startswith(".path"):
+            if tail.startswith(".path"):
                 bad("MULTIPLE-NO-MAP", f"`{ref}` is `multiple: true`, so it is an ARRAY of File "
                                        f"objects and `.path` on the array is undefined. Write "
                                        f"`$(inputs.{ref}.map(d => d.path).join(' '))`.", at)
-        elif t == "data_collection" and not rest.startswith("."):
+        elif t == "data_collection" and tail.startswith(".path"):
+            # ⛔ A COLLECTION IS AN ARRAY TOO. `.path` on it is undefined exactly as it is for a
+            # `multiple: true` data input, and the collection branch only ever looked at the
+            # no-dot case, so this spelling passed.
+            #
+            # ⚠ UNLESS THE TOOL SAYS IT MEANS IT, which is the same escape the workflow parity
+            # check offers: `collection_probe` renders this spelling ON PURPOSE, because measuring
+            # what it yields is the entire tool -- and what it measured is why `sourmash_panel`
+            # parses a JSON array instead. Refusing a tool for demonstrating the hazard it exists
+            # to document is the guard doing harm, so naming the construct in `help` downgrades it.
+            # ⚠ NOT `declared` -- that name is the input table this loop is reading, and shadowing
+            # it turned the next iteration into `TypeError: 'bool' object is not subscriptable`.
+            said_so = f"inputs.{ref}.path" in str((help_ or {}).get("content") or "")
+            (note if said_so else bad)(
+                "MULTIPLE-NO-MAP",
+                f"`{ref}` is a collection -- an ARRAY of File objects -- so `.path` on it is "
+                f"undefined. Write `$(inputs.{ref}.map(d => d.path).join(' '))`."
+                + (" (named in `help`, so read as deliberate)" if said_so else ""), at)
+        elif t == "data_collection" and not tail:
             # ⚠ DELIBERATE IN THIS REPOSITORY, SO A NOTE. `$(inputs.xs)` on a collection renders a
             # JSON array of File records, and `sourmash_panel` captures exactly that into a heredoc
             # on purpose -- a job container never sees the collection itself. It is still worth
@@ -412,10 +455,10 @@ def lint(path):                                     # this IS a checklist; it is
             note("COLLECTION-RENDERED", f"`$(inputs.{ref})` renders the collection as a JSON array "
                                         f"of File records. Intended? The idiom for paths is "
                                         f"`$(inputs.{ref}.map(d => d.path).join(' '))`.", at)
-        elif t in SCALAR_TYPES and rest.startswith(".path"):
+        elif t in SCALAR_TYPES and tail.startswith(".path"):
             bad("PATH-ON-SCALAR", f"`{ref}` is a `{t}` -- a value, not a File -- so `.path` is "
                                   f"undefined. Write `$(inputs.{ref})`.", at)
-        if t == "text" and not rest:
+        if t == "text" and not tail:
             # ⛔ SCALARS ARE NOT shlex.quote()d. `$(...)` in a shell_command is substituted as RAW
             # TEXT (unlike a base_command argument), so a text value carrying a space, a quote or a
             # `$` breaks the command -- and injects into it when the value is not yours.
@@ -502,6 +545,12 @@ def lint(path):                                     # this IS a checklist; it is
             # would be flagging the intent.
             if a.endswith("|| true"):
                 continue
+            # ⚠ A STATEMENT THAT IS ENTIRELY A GALAXY EXPRESSION IS NOT A STATEMENT YET. The
+            # optional-input idiom renders either a fragment that already ends in `&&` or the empty
+            # string, and the shell sees neither an unchained command nor a blank one -- a newline
+            # after `&&` is a continuation. Judging it as written text flagged correct code.
+            if a.startswith("$(") and a.endswith(")"):
+                continue
             # ⚠ A NOTE, NOT A PROBLEM -- SAY WHAT WAS MEASURED. Attacking the one instance of this
             # in the repository (`samtools faidx seq.fa` / `cut -f1,2 seq.fa.fai`) could not make
             # it fire: samtools writes its index at the end, so a failure leaves no `.fai` and
@@ -522,9 +571,24 @@ def lint(path):                                     # this IS a checklist; it is
         spellings = [fwd, *[k for k, v in aliases.items() if v == fwd]]
             # ⚠ SUBSTRING, AND DELIBERATELY LOOSE. `FasTAN -oscan` writes `scan.1ano` without the
             # literal name ever appearing, so an exact match reports a phantom on a correct tool.
-        if not any(s in cmd for s in spellings) and fwd.split(".")[0] not in cmd:
-            bad("PHANTOM-OUTPUT", f"output `{oname}`: from_work_dir {fwd!r}, and neither it nor "
-                                  f"{fwd.split('.')[0]!r} appears in shell_command")
+        # ⚠ A from_work_dir MAY NAME A SUBDIRECTORY, and the file is then usually written by an
+        # inlined script that only knows the basename -- `--output-dir outdir` plus a script that
+        # opens `triage.tsv`. Testing the full path alone reported four phantoms against a tool
+        # whose outputs are all produced correctly.
+        base = fwd.rsplit("/", 1)[-1]
+        if not any(s in cmd for s in [*spellings, base]):
+            # ⚠ THE STEM IS A HINT, NOT A MATCH, so it is a NOTE. `FasTAN -oscan` writes
+            # `scan.1ano` without the name ever appearing, which is why a stem fallback exists at
+            # all -- but the fallback is wide: renaming a target to `chrom.tsv` still matches the
+            # stem `chrom` of the `chrom.sizes` sitting in the command, and the check went quiet on
+            # an output nothing writes. Split the two answers instead of merging them.
+            if fwd.split(".")[0] in cmd or base.split(".")[0] in cmd:
+                note("PHANTOM-OUTPUT", f"output `{oname}`: from_work_dir {fwd!r} never appears in "
+                                       f"shell_command; only its STEM does, which may be another "
+                                       f"file's name. Confirm something writes exactly {base!r}.")
+            else:
+                bad("PHANTOM-OUTPUT", f"output `{oname}`: from_work_dir {fwd!r} -- neither it, nor "
+                                      f"{base!r}, nor their stem appears anywhere in shell_command")
     created = {}
     for oname, fwd in fwd_targets:
         spellings = "|".join([re.escape(fwd)]

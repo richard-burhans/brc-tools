@@ -1,0 +1,295 @@
+class: GalaxyWorkflow
+label: WF-C2 project_annotations (UDT edition, usegalaxy.org)
+license: MIT
+creator:
+  - class: Person
+    identifier: https://orcid.org/0000-0002-5987-8032
+    name: Anton Nekrutenko
+  - class: Person
+    identifier: https://orcid.org/0009-0006-5949-0958
+    name: Richard Burhans
+  - class: Person
+    name: Claude Opus 4.8
+release: "0.1"
+doc: >-
+  WF-C2 ported to run on usegalaxy.org. FIVE of the classic workflow's twenty-one steps name tools
+  that are installed on the BRC instance and 404 on .org -- collection_self_pairs,
+  collection_anchor_grid, phase_c2_triage, toga2 and phase_c4_merge -- so the classic imports there
+  and cannot be invoked at all. Four of those five are addressed here with User-Defined Tools
+  (`brc-self-pairs`, `brc-anchor-grid`, `brc-phase-c2-triage`, `brc-phase-c4-merge`).
+
+  ⛔ THE FIFTH IS NOT PORTABLE, AND THAT IS WHY THIS EDITION IS THE LIFTOFF-ONLY PASS. A UDT is a
+  container plus a command, so it can only wrap an image a Galaxy can PULL. TOGA2 has none:
+  `tools/toga2/macros.xml` records that upstream hillerlab/TOGA2 ships only an
+  apptainer/Singularity def, with no published Docker image, no bioconda package and no
+  biocontainer, and this repository builds its own SIF and puts it on shared storage at
+  `/data/containers/toga2-2.0.8.sif`. A local .sif path is not something usegalaxy.org can resolve.
+  Until an upstream image exists, the TOGA2/CESAR2 rescue cannot run there by any means, and a port
+  that pretended otherwise would be a workflow that imports and then fails at the one step that
+  matters.
+
+  So this edition runs the pass the classic's own doc describes -- "Liftoff-only; TOGA2 off" -- and
+  drops the rescue branch outright rather than wiring it to a tool that cannot start. NINE steps of
+  the classic's twenty-one are therefore absent, and with them three inputs: `anchor_masked`
+  (TOGA2 --ref_2bit), `anchor_isoforms` (TOGA2 --isoform_file) and `cleaned_chains` (WF-C's chains,
+  TOGA2 --chain_file). Both OUTPUTS are unchanged, because `brc-phase-c4-merge` produces exactly
+  what the classic's merge produces when the TOGA directory is empty: every projected gene tagged
+  `source=liftoff`, and every reference gene absent from the projection reported `source=none,
+  intactness=M`.
+
+  ⚠ THE RESCUE HALF IS BUILT AND WAITING, NOT ABANDONED. `brc-anchor-grid` is included in this
+  repository even though this workflow does not use it: it is the tool that bridges WF-C's
+  `{target}.{query}` chains to this grid's `{anchor}_{query}` cells, and it is the only other piece
+  the pass-2 edition needs. The day TOGA2 has a pullable image, the rescue branch is nine steps of
+  wiring and no new tools.
+
+  ⚠ TWO THRESHOLDS ARE TUNED FOR THE PLASMODIUM PANEL AND TRAVEL BADLY. `subtelomere_bp: 100000`
+  flags any gene within 100 kb of a sequence END, so a gene escapes rule R7 only on a sequence
+  longer than 200 kb: on a scaffold-level assembly that is EVERY gene, all of them are routed to a
+  CESAR2 fallback that this edition does not run, `liftoff_clean.gff3` comes out empty, and the
+  merge reports every reference gene as `source=none, intactness=M` with a green invocation. That
+  is a real result shape, not a crash -- read `triage_summary` before believing an annotation
+  count. The panel this repository targets is chromosome-level, where the threshold is harmless.
+  `core_identity_min: 0.95` is likewise a within-species number.
+
+  ⚠ `query_name` IS THE LITERAL STRING `query` FOR EVERY CELL, and it is written into
+  `summary.json`. A per-element scalar derived from a map-over identifier is not expressible in
+  gxformat2, so each cell's summary claims to describe a strain called "query" and the artifacts
+  are attributable only by their collection element identifier. The classic has the same
+  limitation; it is recorded here because `triage_summary` is now published and a reader will
+  otherwise wonder.
+
+  ⚠ ONE STATE VALUE IS SET HERE THAT THE CLASSIC LEAVES TO A DEFAULT. Every
+  `__CROSS_PRODUCT_FLAT__` step declares `join_identifier: '_'` explicitly. The default is already
+  `_`, so this changes nothing about what runs -- but this project's workflows are invoked through
+  a renderer that refuses on Galaxy's "No value found for X. Using default" upgrade messages,
+  because `allow_tool_state_corrections` downgrades a refusal to a server-side log line that no API
+  response exposes. WF-C's UDT edition sets the same value for the same reason.
+
+inputs:
+  anchor_assemblies:
+    type: collection
+    collection_type: list
+    doc: anchor unmasked FASTAs (Liftoff reference), id=anchor
+    position: {top: 0, left: 0}
+  anchor_gene_gff3s:
+    type: collection
+    collection_type: list
+    doc: anchor gene.gff3 (Liftoff annotation), id=anchor
+    position: {top: 10, left: 10}
+  anchor_bed12s:
+    type: collection
+    collection_type: list
+    doc: >-
+      anchor BED12 (triage/merge reference gene set), id=anchor. WF-A's anchor_prep writes it, and
+      column 4 is the GENE id -- the merge keys its reference set on that column.
+    position: {top: 20, left: 20}
+  assemblies:
+    type: collection
+    collection_type: list
+    doc: query unmasked FASTAs (Liftoff target = query), id=strain
+    position: {top: 30, left: 30}
+  query_masked:
+    type: collection
+    collection_type: list
+    doc: query softmasked FASTAs (triage --query-fasta; WF-B), id=strain
+    position: {top: 40, left: 40}
+steps:
+  anchor_identifiers:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/collection_element_identifiers/collection_element_identifiers/0.0.3
+    label: anchor_identifiers
+    position: {top: 45, left: 45}
+    doc: >-
+      The anchor element identifiers as a text dataset. ⛔ NOT REDUNDANT WITH THE COLLECTION. A
+      Galaxy job cannot read its input collection's identifiers, so the self-pair list -- which is
+      pure bookkeeping over those names -- has to be handed them as data. The classic tool did this
+      with Cheetah, which a UDT has no equivalent of. Stock IUC tool; it runs on .org.
+    in:
+      input_collection: anchor_assemblies
+    out:
+      output: {}
+  gen_anchor_self_pairs:
+    tool_id: brc-self-pairs
+    label: gen_anchor_self_pairs
+    position: {top: 50, left: 50}
+    doc: >-
+      The `A_A` cells to drop from the projection grid: an anchor does not need its own annotation
+      projected onto itself. Identical output to `collection_self_pairs`, from the identifier file
+      instead of from the collection.
+    in:
+      identifiers: anchor_identifiers/output
+    out:
+      output: {}
+  p_grid_fa:
+    tool_id: __CROSS_PRODUCT_FLAT__
+    in:
+      input_a: anchor_assemblies
+      input_b: assemblies
+    state:
+      join_identifier: '_'
+    out:
+      output_a: {}
+      output_b: {}
+    position: {top: 60, left: 60}
+  p_grid_gff:
+    tool_id: __CROSS_PRODUCT_FLAT__
+    in:
+      input_a: anchor_gene_gff3s
+      input_b: assemblies
+    state:
+      join_identifier: '_'
+    out:
+      output_a: {}
+      output_b: {}
+    position: {top: 70, left: 70}
+  p_grid_bed:
+    tool_id: __CROSS_PRODUCT_FLAT__
+    in:
+      input_a: anchor_bed12s
+      input_b: query_masked
+    state:
+      join_identifier: '_'
+    out:
+      output_a: {}
+      output_b: {}
+    position: {top: 80, left: 80}
+  p_anc_fa:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: p_grid_fa/output_a
+      how|filter_source: gen_anchor_self_pairs/output
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 90, left: 90}
+  p_qry_fa:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: p_grid_fa/output_b
+      how|filter_source: gen_anchor_self_pairs/output
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 100, left: 100}
+  p_anc_gff:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: p_grid_gff/output_a
+      how|filter_source: gen_anchor_self_pairs/output
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 110, left: 110}
+  p_anc_bed:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: p_grid_bed/output_a
+      how|filter_source: gen_anchor_self_pairs/output
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 120, left: 120}
+  p_qry_masked:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: p_grid_bed/output_b
+      how|filter_source: gen_anchor_self_pairs/output
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 130, left: 130}
+  p_liftoff:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/liftoff/liftoff/1.6.3+galaxy0
+    in:
+      target_fasta: p_qry_fa/output_filtered
+      reference_fasta: p_anc_fa/output_filtered
+      annotation: p_anc_gff/output_filtered
+    state:
+      chromosome_mapping:
+        copy_detection:
+          # ⛔ QUOTED, BECAUSE `find_copies` IS A SELECT AND NOT A BOOLEAN. Its legal values are the
+          # STRINGS 'false'/'true' (live schema: SelectToolParameter, options No/false, Yes/true),
+          # and `basic.py`'s `if value in legal_values` tests Python True against {'false','true'}
+          # and then against the option labels, and rejects it. Measured by importing the classic
+          # file to usegalaxy.org and exporting the native workflow back: with the bare boolean the
+          # stored state is `{"chromosome_mapping": {"copy_detection": {"find_copies": true}}}` --
+          # no `__current_case__`, no `__page__`, and NO `copy_min_identity`. The conditional never
+          # resolved, so the 0.95 threshold is silently gone and `-copies` is never passed at all.
+          # The two Liftoff knobs this workflow actually chooses are the two that do not survive
+          # import. With the quotes: `{"find_copies": "true", "__current_case__": 1,
+          # "copy_min_identity": "0.95"}`.
+          find_copies: 'true'
+          copy_min_identity: 0.95
+    out:
+      liftoff_gff: {}
+      unmapped: {}
+    position: {top: 140, left: 140}
+  p_triage:
+    tool_id: brc-phase-c2-triage
+    label: p_triage
+    in:
+      liftoff_gff: p_liftoff/liftoff_gff
+      query_fasta: p_qry_masked/output_filtered
+      reference_bed: p_anc_bed/output_filtered
+    state:
+      query_name: query
+      core_identity_min: 0.95
+      core_coverage_min: 0.9
+      family_identity_min: 0.85
+      subtelomere_bp: 100000
+    out:
+      triage_tsv: {}
+      needs_cesar2_bed: {}
+      liftoff_clean_gff3: {}
+      summary_json: {}
+    position: {top: 150, left: 150}
+  p_merge:
+    tool_id: brc-phase-c4-merge
+    label: p_merge
+    doc: >-
+      Liftoff-only: no TOGA2 inputs are connected, so every projected gene is tagged
+      `source=liftoff` and a reference gene absent from the projection is reported `source=none,
+      intactness=M`. The UDT refuses a HALF-supplied TOGA pair rather than silently producing this
+      same answer while looking like a rescue.
+    in:
+      liftoff_clean: p_triage/liftoff_clean_gff3
+      ref_bed: p_anc_bed/output_filtered
+    state:
+      query: query
+    out:
+      annotation_gff3: {}
+      classification_tsv: {}
+    position: {top: 250, left: 250}
+outputs:
+  merged_annotations:
+    outputSource: p_merge/annotation_gff3
+  classifications:
+    outputSource: p_merge/classification_tsv
+  # ⛔ THREE OUTPUTS THE CLASSIC PRODUCES AND PUBLISHES NOTHING OF, ADDED BECAUSE WITHOUT THEM A
+  # RUN CANNOT BE TOLD FROM AN EMPTY ONE. `merged_annotations` is a syntactically valid GFF3 whether
+  # it holds every gene or none: if triage rejects everything, `liftoff_clean.gff3` is comments only,
+  # the merge writes every reference gene as `source=none, intactness=M`, both outputs appear, and
+  # the invocation is green. The numbers that would expose that are all in datasets the classic
+  # leaves unpublished -- `summary.json` carries the fallback rate, `triage.tsv` the per-gene rule
+  # trace, and Liftoff's `unmapped` is the only record of what failed to project at all.
+  triage_summary:
+    outputSource: p_triage/summary_json
+    doc: Per-cell counts and the CESAR2 fallback rate. Read this before quoting an annotation count.
+  triage_table:
+    outputSource: p_triage/triage_tsv
+    doc: Per-gene rule trace -- which rule flagged each gene, and with what identity and coverage.
+  liftoff_unmapped:
+    outputSource: p_liftoff/unmapped
+    doc: >-
+      Reference features Liftoff could not place at all. Absent from every other output, including
+      the classification table, which only reports genes the reference BED12 knows about.

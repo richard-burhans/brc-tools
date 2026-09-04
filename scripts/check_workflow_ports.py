@@ -295,7 +295,12 @@ def main() -> int:
         if tid not in udt:
             continue
         given = set(s.get("in") or {}) | set(s.get("state") or {})
-        declared = set(udt[tid]["inputs"])
+        # ⚠ AN OPTIONAL INPUT IS OPTIONAL. This required every declared input to be supplied, which
+        # is right for the ones that are -- and reported five problems against a correct workflow
+        # the moment a tool declared an optional data input the step legitimately leaves empty
+        # (WF-C2's Liftoff-only pass connects none of the four TOGA2 files, which is the whole
+        # point of that edition). `optional: true` is the author saying so in the tool.
+        declared = {n for n, spec in udt[tid]["inputs"].items() if not (spec or {}).get("optional")}
         for m in sorted(declared - given):
             bad("UNSUPPLIED", f"{name}.{m}", f"{tid} declares input {m!r}; step supplies nothing")
         for e in sorted(given - declared):
