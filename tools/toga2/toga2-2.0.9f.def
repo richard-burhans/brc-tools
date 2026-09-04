@@ -1,0 +1,119 @@
+## Apptainer definition for the TOGA2 image this wrapper runs from.
+##
+## Derived from upstream supply/containers/apptainer.def
+## (github.com/hillerlab/TOGA2) with two local changes, both marked inline:
+##
+##   1. the clone is pinned to COMMIT 407b8dd1 (v2.0.9f). v2.0.9f is not a tag --
+##      the newest tag is v2.0.9, and the parser fix (2ee232cf) and the version
+##      bump (4668aeee) landed after it, so a tag would miss them. Upstream clones the default
+##      branch, so the image is not reproducible; v2.0.8 is the version this
+##      wrapper's CLI mapping and output schema were verified against.
+##   2. apt is forced to IPv4. Our host has no working IPv6 egress while DNS
+##      returns AAAA records first, and apt does not fall back, so the
+##      in-container apt-get dies mid-build without this.
+##
+## Build (both dirs must already exist):
+##
+##   sudo APPTAINER_CACHEDIR=<cache> APPTAINER_TMPDIR=<tmp> \
+##       apptainer build toga2-2.0.8.sif toga2-2.0.8.def
+##
+## ~7-10 minutes, ~5.5 GB. Place the SIF on shared storage so every compute
+## node sees one copy, and point @TOGA_IMAGE@ in macros.xml at it.
+##
+## KNOWN ISSUE, not yet fixed here: upstream installs Nextflow from
+## get.nextflow.io, i.e. whatever is newest at BUILD time, and a current build
+## ships a parser that rejects TOGA2 2.0.8's own execute_joblist.nf. The
+## wrapper works around it with NXF_SYNTAX_PARSER=v1, but that parser is
+## deprecated; the durable fix is to pin NXF_VER below.
+## Reported upstream: github.com/hillerlab/TOGA2/issues/42
+##
+## The upstream %runscript writes typographic quotes into /etc/passwd
+## (U+201C/U+201D rather than ASCII). Harmless here since Galaxy invokes the
+## container with `exec`, so the runscript never runs. Left as upstream has it.
+
+Bootstrap: docker 
+From: continuumio/anaconda3 
+Stage: build
+
+## This is an example Singularity container build for Slurm compatibility
+
+%environment
+    export PATH=$HOME/.cargo/bin:/opt/nextflow:/opt/conda/bin:/opt/TOGA2:/opt/TOGA2/bin:/opt/TOGA2/bin/prank:/opt/TOGA2/bin/iqtree2:/opt/TOGA2/bin/intronIC:$PATH
+    export SHELL=/bin/bash
+    export NXF_HOME=$TMPDIR/.nextflow
+    source /opt/TOGA2/toga2/bin/activate
+
+%post
+    ## host has no IPv6 egress; apt does not fall back from AAAA records
+    printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4
+
+    ## install curl, Java, mailx, and git
+    apt-get update && apt-get install -y \
+        curl \
+        openjdk-17-jdk \
+        git \
+        bsd-mailx \
+        mailutils \
+        && rm -rf /var/lib/apt/lists/*
+
+    ## install cargo
+    curl https://sh.rustup.rs -sSf | sh -s -- -y
+    . "$HOME/.cargo/env" 
+
+    ## install Nextflow
+    mkdir -p /opt/nextflow
+    curl -sSL https://get.nextflow.io | bash
+    mv nextflow /opt/nextflow/nextflow
+    chmod +x /opt/nextflow/nextflow
+    export PATH=/opt/nextflow/:$PATH
+
+    ## install gcc
+    apt-get -y update
+    apt -y install build-essential
+
+    ## facilitate installation by removing conflicting packages
+    python3 -m pip uninstall -y gensim numba datashader
+    python3 -m pip install streamlit --upgrade --root-user-action=ignore
+    python3 -m pip install pyarrow --upgrade --root-user-action=ignore
+    python3 -m pip install bottleneck --upgrade --root-user-action=ignore
+
+    ## make sure that bash is the default shell in the container
+    sed -i 's/required/sufficient/g' /etc/pam.d/chsh
+    rm /bin/sh && ln -f /bin/bash /bin/sh
+
+    ## clone the current TOGA2 repo
+    git clone --recurse-submodules https://github.com/hillerlab/TOGA2 /opt/TOGA2 && \
+    cd /opt/TOGA2 && git checkout 407b8dd1 && git submodule update --init --recursive
+    cd /opt/TOGA2
+    ## create TOGA2 running environment
+    python3 -m venv toga2
+    . toga2/bin/activate
+    ## build TOGA2, install/update the necessary third-party requirements
+    make
+
+    ## create a dummy user for Slurm
+    adduser --disabled-password --gecos "" slurm
+
+    ## looks like we're all set
+
+%runscript
+    ## by default the container is configured for SLURM; modify the passwd
+    ## as suggested at https://info.gwdg.de/wiki/doku.php?id=wiki:hpc:usage_of_slurm_within_a_singularity_container
+    echo “slurmadmin:x:300:300::/opt/slurm/slurm:/bin/false” >> /etc/passwd
+    echo “slurmadmin:x:300:” >> /etc/group
+    cd /opt/TOGA2
+    # source toga2/bin/activate
+    # export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+    export SLURM_CONF=$SLURM_CONF
+    export NXF_HOME=$TMPDIR/.nextflow
+    export EXEC_DIR=$EXEC_DIR
+    # export LD_LIBRARY_PATH=/host/usr/lib64:$LD_LIBRARY_PATH
+    export PATH=$EXEC_DIR:$HOME/.cargo/bin:/opt/nextflow:/opt/conda/bin:/opt/TOGA2:/opt/TOGA2/bin:/opt/TOGA2/bin/prank:/opt/TOGA2/bin/iqtree2:/opt/TOGA2/bin/intronIC:$PATH
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$LIB_DIR
+    # exec toga2.py "$@"
+    # ./toga2.py
+    exec "$@"
+
+%labels
+    Author SGN Hillerlab
+    Version 1.0

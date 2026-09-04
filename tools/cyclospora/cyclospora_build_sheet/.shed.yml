@@ -1,0 +1,18 @@
+categories:
+- Sequence Analysis
+- Variant Analysis
+description: Collect per-specimen Cyclospora haplotype calls into one CDC HDS wide sheet
+long_description: |
+  Stage 6 of the Cyclospora cayetanensis LoFreq/PyEuk typing arm. Takes a list
+  collection of per-specimen caller TSVs (per-PART haplotypes and/or the
+  Mt-Junction call) and writes the CDC haplotype data sheet: rows are specimens,
+  columns are haplotypes, X marks presence, and an entirely empty locus block
+  encodes "locus not called", which is what PyEuk's dropout handling keys off.
+  An optional audit table reports how many locus blocks came out empty per
+  specimen. Ported from pyeuk-bench/lofreq_arm/build_sheets.py and extended to
+  read per-specimen files and to carry the Mt-Junction locus.
+name: cyclospora_build_sheet
+owner: nekrut
+homepage_url: https://github.com/nekrut/brc-tools
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/cyclospora/cyclospora_build_sheet
+type: unrestricted

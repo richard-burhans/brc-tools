@@ -7,9 +7,17 @@ name: udt-drift
 on:
   push:
     branches: [main]
-    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py', 'scripts/check_udt_provenance.py', 'scripts/build_inventory_udts.py']
+    # ⚠ THE TRIGGER HAS TO NAME EVERY SCRIPT THE JOBS BELOW RUN, or a change that breaks one of
+    # them runs no check at all -- and `workflows/**` matters because the port checker reads those.
+    paths: ['tools/**', 'udt/**', 'workflows/**',
+            'scripts/build_softmask_udts.py', 'scripts/build_inventory_udts.py',
+            'scripts/check_udt_provenance.py', 'scripts/check_udt_definitions.py',
+            'scripts/check_workflow_ports.py', 'scripts/check_coordinates.py']
   pull_request:
-    paths: ['tools/**', 'udt/**', 'scripts/build_softmask_udts.py', 'scripts/check_udt_provenance.py', 'scripts/build_inventory_udts.py']
+    paths: ['tools/**', 'udt/**', 'workflows/**',
+            'scripts/build_softmask_udts.py', 'scripts/build_inventory_udts.py',
+            'scripts/check_udt_provenance.py', 'scripts/check_udt_definitions.py',
+            'scripts/check_workflow_ports.py', 'scripts/check_coordinates.py']
 
 jobs:
   drift:
@@ -37,3 +45,52 @@ jobs:
       # inlined copy and the wrapper's own helper from drifting apart.
       - name: Inventory UDTs match their helpers
         run: python3 scripts/build_inventory_udts.py --check
+  # The generator checks above ask "does udt/ match its sources?". This one asks a different
+  # question -- "are these tools CORRECT?" -- against the udt-authoring skill's schema, templating
+  # and common-mistakes references, plus the silent-success cases found by attacking the tools with
+  # adversarial inputs. It is a separate job on purpose: it needs pyyaml and galaxy-tool-util, and
+  # a dependency install that fails must not be able to mask a drift result.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # galaxy-tool-util is the SERVER's own UserToolSource model and lint -- the real authority
+      # for the schema half. check_udt_definitions.py uses it when present and says so when not.
+      - run: pip install --quiet pyyaml galaxy-tool-util
+
+      # A checker nobody has watched go red is not evidence of anything: each of these injects its
+      # own defect classes into this repo's real files and confirms every one is caught.
+      - name: The checkers still bite
+        run: |
+          python3 scripts/check_udt_definitions.py --self-test
+          python3 scripts/check_workflow_ports.py --self-test
+
+      - name: UDT definitions are correct
+        run: python3 scripts/check_udt_definitions.py
+
+      # Offline half only -- the remote half needs a live Galaxy and prints its own SKIP line.
+      - name: Workflow ports resolve
+        run: |
+          for w in workflows/*/*_udt.gxwf.yml; do
+            echo "== $w"
+            python3 scripts/check_workflow_ports.py "$w"
+          done
+
+  # Coordinates are the one thing every other check here is blind to, because a tool whose output
+  # is internally consistent passes them all: right widths, right totals, right coverage
+  # percentages, and a verification script comparing a mask against a FASTA masked FROM that mask.
+  # Three coordinate bugs shipped that way. This asks each coordinate-emitting tool for an
+  # independent answer by a second route and requires the two to agree exactly. Its own job,
+  # because it needs docker and image pulls, and a pull failure must not mask the checks above.
+  coordinates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Coordinates agree with the tools' own output
+        run: python3 scripts/check_coordinates.py

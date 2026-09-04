@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<macros>
+    <token name="@TOOL_VERSION@">1.0.0</token>
+    <token name="@VERSION_SUFFIX@">0</token>
+    <token name="@PROFILE@">26.0</token>
+
+    <!--
+        CONTAINER-ONLY, deliberately.
+
+        Every tool of the Cyclospora LoFreq/PyEuk arm resolves through ONE
+        Apptainer image, built from tools/cyclospora/container/cyclospora-typing.def
+        and pinned to the exact interpreter and wheel versions the reference run
+        used (Python 3.11.15, numpy 2.4.6, scipy 1.17.1, pandas 3.0.5,
+        scikit-learn 1.9.0, numba 0.67.0, pysam 0.23.3, PyEuk @ d8e45a81).
+
+        Not conda: two or more `requirement` entries resolve to a merged
+        `mulled-v1-<hash>` environment that may never have been built, and the
+        job then dies with exit 1 and completely empty stderr. One image for the
+        whole arm also means the sheet this tool writes and the distance matrix
+        PyEuk computes from it come out of the same interpreter.
+
+        This particular tool needs nothing beyond the Python standard library,
+        so the image is heavier than it strictly has to be; sharing it is worth
+        more than shaving 223 MiB off one step.
+    -->
+    <token name="@CYCLOSPORA_IMAGE@">/data/containers/cyclospora-typing-1.0.0.sif</token>
+
+    <xml name="requirements">
+        <requirements>
+            <container type="singularity">@CYCLOSPORA_IMAGE@</container>
+        </requirements>
+    </xml>
+
+    <xml name="citations">
+        <citations>
+            <!-- Barratt et al., the CDC haplotype data sheet / eukaryotyping lineage -->
+            <citation type="doi">10.1017/S0031182019000581</citation>
+            <citation type="bibtex"><![CDATA[
+@misc{cyclospora_build_sheet,
+  author = {Nekrutenko lab and the BRC Cyclospora typing project},
+  title  = {cyclospora_build_sheet: collect per-specimen Cyclospora haplotype calls into a CDC HDS wide sheet},
+  year   = {2026},
+  note   = {Ported from pyeuk-bench/lofreq_arm/build_sheets.py; see tools/cyclospora/VALIDATION.md}
+}
+            ]]></citation>
+        </citations>
+    </xml>
+</macros>

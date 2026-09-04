@@ -17,8 +17,8 @@ description: Find tandem arrays in a GDB, stage 2 of 3
 container: quay.io/biocontainers/fastan:0.8--h118bc1c_1
 shell_command: |
   set -o pipefail
-  cp '$(inputs.gdb.path)' gdb.tar
-  tar xf gdb.tar
+  cp '$(inputs.gdb.path)' gdb.tar &&
+  tar xf gdb.tar &&
   FasTAN -m -p -T1 -oscan gdb
 inputs:
   - name: gdb

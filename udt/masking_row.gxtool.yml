@@ -95,7 +95,7 @@ shell_command: |
     --tantan "s=$(inputs.tantan.path)" \
     --fastan "s=$(inputs.fastan.path)" \
     --union "s=$(inputs.union.path)" \
-    --out full.tabular
+    --out full.tabular &&
   tail -n +2 full.tabular | cut -f2- > row.tabular
 inputs:
   - name: dustmasker
