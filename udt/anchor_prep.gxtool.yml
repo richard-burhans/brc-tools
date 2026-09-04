@@ -27,9 +27,20 @@ shell_command: |
   # because they come from ONE annotation; deriving them from different files would let their
   # transcript ids disagree, which is the exact failure anchor_prep exists to prevent.
   BEGIN { FS = "\t"; OFS = "\t" }
+  # ⛔ CRLF SILENTLY EMPTIES THE BED12, AND EXITS 0. build_anchor_inputs.py opens the GFF3 in TEXT
+  # mode, so Python's universal newlines strip the `\r` for it; awk with the default RS does not,
+  # and gffread strips it in its own BED output. The two sides then disagree about the gene id --
+  # pass 1 stores `gA\r`, gffread's column 13 says `geneID=gA`, nothing matches, and every row is
+  # dropped: 0-byte BED12, exit 0, `npc` and `niso` both non-zero so the empty-anchor guard never
+  # fires. Measured on an NCBI-shaped GFF3 converted to CRLF. Stripping HERE fixes every pass at
+  # once, because passes 1 and 3 and gffread all read `nuclear.gff3`, not the raw input.
+  { sub(/\r$/, "") }
   /^#/  { print; next }
   NF < 7 { print; next }
-  $7 == "+" || $7 == "-" { print; next }
+    # ⛔ ONLY `?` IS UNPARSEABLE. GFF3 column 7 has FOUR legal values -- `+ - . ?` -- and `.` means
+  # "not stranded", which gffread reads without complaint. Dropping it lost a real BED12 row and
+  # reported it as an unparseable strand: both a silent data loss and a false explanation of it.
+  $7 == "+" || $7 == "-" || $7 == "." { print; next }
   { dropped++; seqs[$1] = 1 }
   END {
       if (dropped > 0) {
@@ -52,7 +63,15 @@ shell_command: |
           # that keeps no rows would leave no file at all -- and Galaxy's from_work_dir then fails
           # with a missing-output error instead of an empty result. The Python opened it
           # unconditionally; this matches that.
-          printf "" > out_bed }
+          printf "" > out_bed
+          # ⛔ AND THE ISOFORMS FILE TOO -- THE ASYMMETRY WAS THE BUG. The line above has guarded
+          # the BED since this file was written; the isoforms table is written through
+          # `| "sort > " out_iso`, and awk opens a PIPE on first write exactly as it opens a
+          # redirect, so zero mRNAs meant NO FILE AT ALL and a green job with an unclaimable
+          # from_work_dir. Reached by an annotation whose transcripts are typed `transcript`
+          # rather than `mRNA` -- which is what AUGUSTUS, StringTie, EVM and gffread itself emit.
+          # Pre-creating one output and not the other is not a decision, it is an oversight.
+          printf "" > out_iso; close(out_iso) }
 
   # ---- pass 1: gene ids of protein_coding_gene / gene features -----------------------------------
   # ⚠ Mirrors collect_protein_coding_genes EXACTLY, INCLUDING ITS `break`. The Python stops at the
@@ -129,6 +148,52 @@ shell_command: |
       for (i = 1; i <= niso; i++) print iso[i] | "LC_ALL=C sort -k1,1 -k2,2 > " out_iso
       close("LC_ALL=C sort -k1,1 -k2,2 > " out_iso)
       printf "bed12: kept %d/%d  isoforms: %d\n", n_kept, n_in, niso > "/dev/stderr"
+      # ⛔ AN EMPTY ANCHOR MUST NOT EXIT 0. TOGA2 cannot tie a projection back to a gene without
+      # these two files, and an empty BED12 that SUCCEEDED is indistinguishable downstream from an
+      # anchor with no protein-coding genes -- which no real annotation has. This fired for real: a
+      # .gff.gz stored under the gff3 datatype was read as binary, "found" 387 garbage features,
+      # and produced two empty files with exit 0. Refuse, and name which count is zero.
+      # ⛔ AND, NOT OR, AND THE FIRST VERSION OF THIS LINE HAD IT WRONG. `||` refuses whenever
+      # EITHER count is zero, which kills a legitimate mRNA-only annotation: it produces output
+      # byte-identical to build_anchor_inputs.py, and this threw it away with exit 1. That breaks
+      # the port contract this file opens with. It also contradicted the pass-2 fallback above,
+      # where `npc == 0` means KEEP EVERYTHING because the gene set was not recognised. Only the
+      # case where NOTHING AT ALL parsed is unambiguously an unreadable input.
+      if (npc == 0 && niso == 0) {
+          msg = "⛔ anchor_prep: parsed " npc " gene(s) and " niso " mRNA(s) -- NEITHER. An"
+          msg = msg " annotation with no genes AND no mRNAs is not readable GFF3."
+          msg = msg " A gzipped file stored under the gff3 datatype reads as BINARY and looks"
+          msg = msg " exactly like this. REFUSING rather than emitting empty files that fail"
+          msg = msg " later, inside TOGA2."
+          print msg > "/dev/stderr"
+          exit 1
+      }
+      # ⛔ KEPT NOTHING IS ALSO A TOTAL LOSS, AND THE GUARD ABOVE CANNOT SEE IT. That one asks
+      # whether the GFF3 PARSED; this one asks whether anything survived, which is a different
+      # question with the same consequence. Two real inputs reach it with npc > 0: a GFF3 whose
+      # mRNA carries `gene_id=LOC_A` while its gene is `ID=GENE_A` (gffread prefers gene_id and
+      # writes `geneID=LOC_A`, so the id sets never intersect), and a gene-only annotation with no
+      # transcripts at all. Both produced a 0-byte BED12 and exit 0. `phase_c4_merge` keys the
+      # reference gene set off column 4, so an empty BED12 makes EVERY gene read as unprojected --
+      # a number that looks like a result.
+      if (n_kept == 0) {
+          msg = "⛔ anchor_prep: kept 0 of " n_in " BED12 row(s) from " npc " parsed gene id(s)."
+          msg = msg " The BED12 would be EMPTY, which reads downstream as an annotation with no"
+          msg = msg " protein-coding genes rather than as a failure. Usual cause: gffread's"
+          msg = msg " `geneID=` (taken from gene_id when present) does not match the ID= values on"
+          msg = msg " the gene features, so no row can be attributed. REFUSING."
+          print msg > "/dev/stderr"
+          exit 1
+      }
+      # ⚠ REPORTED, NOT REFUSED. An isoforms table with no rows is what build_anchor_inputs.py
+      # produces for the same input, and this port's contract is to match it -- but TOGA2 cannot
+      # use an anchor without transcripts, and the cause is nearly always a feature-type spelling
+      # rather than a real absence, so it is worth saying out loud instead of leaving a 0-byte file.
+      if (niso == 0) {
+          print "⚠ anchor_prep: the isoforms table is EMPTY -- no `mRNA` feature was found. Only" \
+                " that exact type is read (as in the XML tool); annotations typed `transcript`" \
+                " (AUGUSTUS, StringTie, EVM, gffread) parse to zero isoforms here." > "/dev/stderr"
+      }
       if (n_noncoding > 0) {
           printf "⚠ %d of %d kept BED12 rows (%.1f%%) are NOT protein-coding:", \
                  n_noncoding, n_kept, 100.0 * n_noncoding / n_kept > "/dev/stderr"
@@ -141,15 +206,20 @@ shell_command: |
   }
   BRC_AWK
   set -o pipefail
-  awk -f strand_filter.awk '$(inputs.input.path)' > nuclear.gff3 &&
+  # ⛔ NOT `cat`. NCBI ships .gff.gz and Galaxy will happily store those bytes under the gff3
+  # datatype, at which point every awk below reads BINARY and matches nothing. That produced an
+  # EMPTY BED12 and an EMPTY isoforms table with exit 0 -- see the guard below.
+  { if gzip -t '$(inputs.input.path)' 2>/dev/null; then gzip -cd '$(inputs.input.path)'; \
+    else cat '$(inputs.input.path)'; fi; } > input.gff3 &&
+  awk -f strand_filter.awk input.gff3 > nuclear.gff3 &&
   gffread --bed nuclear.gff3 -o raw.bed12 &&
   awk -f anchor_prep.awk -v out_bed=anchor.bed12 -v out_iso=anchor.isoforms.tsv \
       pass=1 nuclear.gff3 pass=2 raw.bed12 pass=3 nuclear.gff3
 inputs:
   - name: input
     type: data
-    format: gff3
-    label: Anchor annotation (GFF3)
+    format: gff3,gff3.gz
+    label: Anchor annotation (GFF3), plain or gzipped
     help: >-
       Chrom-reconciled GFF3 for ONE anchor. ⚠ Organellar features whose strand gffread cannot parse
       are dropped first and the count is reported -- without that, two mitochondrial rows in an NCBI
