@@ -32,7 +32,7 @@ shell_command: |
   }
   BRC_AWK
   set -o pipefail
-  cp '$(inputs.ano.path)' scan.1ano
+  cp '$(inputs.ano.path)' scan.1ano &&
   ANOtoBED scan.1ano | { grep -v '^#' || [ $? -eq 1 ]; } | awk -f ano2bed6.awk \
     | LC_ALL=C sort -k1,1 -k2,2n > annotated.bed6
 inputs:

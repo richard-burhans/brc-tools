@@ -21,6 +21,7 @@ shell_command: |
   scripts/build_inventory_udts.py); they are supplied as a file, in collection order.
   """
   import argparse
+  import json
   import re
   import subprocess
   import sys
@@ -32,12 +33,42 @@ shell_command: |
   ap.add_argument("--scaled", default="1000")
   a = ap.parse_args()
 
-  paths = re.findall(r"path:\s*([^,}\s]+)", open(a.rendered).read())
+  # ⛔ THE KEYS ARE QUOTED. Galaxy renders a collection input as JSON -- {"path": "/..."} -- not as a
+  # JavaScript object literal, so a pattern written for a bare path key matches NOTHING and this
+  # script reported "0 assemblies" against a perfectly good render: the heredoc held six well-formed
+  # File records and every one was missed, which is why WF-A could never sketch anything. Parse it as
+  # JSON, and fall back to the pattern only if that fails, so a future change in render shape
+  # degrades loudly instead of silently finding zero.
+  _raw = open(a.rendered).read()
+  try:
+      _recs = json.loads(_raw[_raw.index("["):_raw.rindex("]") + 1])
+      paths = [r["path"] for r in _recs if isinstance(r, dict) and r.get("path")]
+  except Exception:
+      paths = re.findall(r'"?path"?\s*:\s*"?([^",}\s]+)', _raw)
   ids = [x.strip() for x in open(a.ids) if x.strip()]
 
   # ⛔ THE ASSERTION IS THE POINT. Pairing by position is correct only while the two lists describe
   # the same collection; if they do not, every row of the matrix is mislabelled and nothing
   # downstream can tell. Refuse instead.
+  # ⛔ DIAGNOSE THE RENDER BEFORE BLAMING THE IDENTIFIERS. This comparison used to run first, so an
+  # unparseable or empty rendered block reported "0 assemblies but N identifiers -- the identifier file
+  # must come from the SAME collection", pointing the operator at the one input that was correct. A
+  # render this cannot read is a DIFFERENT fault and says so.
+  if not paths:
+      sys.exit("could not read a single dataset path out of the rendered collection input. That is a "
+               "RENDER problem, not an identifier problem -- the identifier file is not implicated. "
+               "The block should be a JSON array of File records; check what the tool actually "
+               "received before changing anything about the identifiers.")
+  # ⛔ DUPLICATE IDENTIFIERS SILENTLY DESTROY A ROW. Each signature is staged at `stage/{name}.sig`,
+  # so two elements sharing a name overwrite one file -- and the count assertion below still passes,
+  # because the COUNTS match. The result is a fully populated matrix in which one genome does not
+  # appear and another appears twice, which is exactly the "runs and mislabels its output" failure
+  # this script's assertions exist to prevent.
+  if len(set(ids)) != len(ids):
+      _dupes = sorted({i for i in ids if ids.count(i) > 1})
+      sys.exit(f"duplicate element identifier(s) {_dupes[:3]}: signatures are staged by name, so a "
+               f"repeat overwrites its predecessor and the matrix would be labelled for a genome it "
+               f"does not contain. Counts alone cannot detect this.")
   if len(paths) != len(ids):
       sys.exit(f"refusing to guess: {len(paths)} assemblies but {len(ids)} identifiers. "
                f"The identifier file must come from the SAME collection, via the IUC "

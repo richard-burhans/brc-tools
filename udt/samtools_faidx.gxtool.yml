@@ -8,15 +8,22 @@ description: Index a FASTA (.fai) and emit the chrom/length table bedtools wants
 container: quay.io/biocontainers/samtools:1.24--h9dcdb79_1
 shell_command: |
   set -o pipefail
-  cp '$(inputs.input.path)' seq.fa
-  samtools faidx seq.fa
+  { if gzip -t '$(inputs.input.path)' 2>/dev/null; then gzip -cd '$(inputs.input.path)'; else cat '$(inputs.input.path)'; fi; } \
+    > seq.fa &&
+  samtools faidx seq.fa &&
   cut -f1,2 seq.fa.fai > chrom.sizes
 inputs:
   - name: input
     type: data
-    format: fasta
+    format: fasta,fasta.gz
     label: FASTA to index
-    help: plain FASTA. samtools faidx accepts bgzip but NOT ordinary gzip.
+    help: >-
+      Plain or gzipped. ⛔ samtools faidx CANNOT index ordinary gzip -- it accepts bgzip and
+      nothing else -- so a .gz input is decompressed first rather than passed through. Handed one
+      directly it fails with "Cannot index files compressed with gzip, please use bgzip", once per
+      element, which is what WF-A did on an NCBI assembly collection: NCBI ships .gz, and unlike
+      WF-B (where this step reads the already-decompressed output of brc-fasta-uppercase) WF-A
+      indexes the raw assemblies.
 outputs:
   - name: output
     type: data

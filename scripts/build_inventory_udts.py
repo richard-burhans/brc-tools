@@ -58,6 +58,7 @@ The identifiers cannot be read from the collection inside a job (see the module 
 scripts/build_inventory_udts.py); they are supplied as a file, in collection order.
 \"\"\"
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -69,12 +70,42 @@ ap.add_argument("--ksize", default="31")
 ap.add_argument("--scaled", default="1000")
 a = ap.parse_args()
 
-paths = re.findall(r"path:\\s*([^,}\\s]+)", open(a.rendered).read())
+# ⛔ THE KEYS ARE QUOTED. Galaxy renders a collection input as JSON -- {"path": "/..."} -- not as a
+# JavaScript object literal, so a pattern written for a bare path key matches NOTHING and this
+# script reported "0 assemblies" against a perfectly good render: the heredoc held six well-formed
+# File records and every one was missed, which is why WF-A could never sketch anything. Parse it as
+# JSON, and fall back to the pattern only if that fails, so a future change in render shape
+# degrades loudly instead of silently finding zero.
+_raw = open(a.rendered).read()
+try:
+    _recs = json.loads(_raw[_raw.index("["):_raw.rindex("]") + 1])
+    paths = [r["path"] for r in _recs if isinstance(r, dict) and r.get("path")]
+except Exception:
+    paths = re.findall(r'"?path"?\\s*:\\s*"?([^",}\\s]+)', _raw)
 ids = [x.strip() for x in open(a.ids) if x.strip()]
 
 # ⛔ THE ASSERTION IS THE POINT. Pairing by position is correct only while the two lists describe
 # the same collection; if they do not, every row of the matrix is mislabelled and nothing
 # downstream can tell. Refuse instead.
+# ⛔ DIAGNOSE THE RENDER BEFORE BLAMING THE IDENTIFIERS. This comparison used to run first, so an
+# unparseable or empty rendered block reported "0 assemblies but N identifiers -- the identifier file
+# must come from the SAME collection", pointing the operator at the one input that was correct. A
+# render this cannot read is a DIFFERENT fault and says so.
+if not paths:
+    sys.exit("could not read a single dataset path out of the rendered collection input. That is a "
+             "RENDER problem, not an identifier problem -- the identifier file is not implicated. "
+             "The block should be a JSON array of File records; check what the tool actually "
+             "received before changing anything about the identifiers.")
+# ⛔ DUPLICATE IDENTIFIERS SILENTLY DESTROY A ROW. Each signature is staged at `stage/{name}.sig`,
+# so two elements sharing a name overwrite one file -- and the count assertion below still passes,
+# because the COUNTS match. The result is a fully populated matrix in which one genome does not
+# appear and another appears twice, which is exactly the "runs and mislabels its output" failure
+# this script's assertions exist to prevent.
+if len(set(ids)) != len(ids):
+    _dupes = sorted({i for i in ids if ids.count(i) > 1})
+    sys.exit(f"duplicate element identifier(s) {_dupes[:3]}: signatures are staged by name, so a "
+             f"repeat overwrites its predecessor and the matrix would be labelled for a genome it "
+             f"does not contain. Counts alone cannot detect this.")
 if len(paths) != len(ids):
     sys.exit(f"refusing to guess: {len(paths)} assemblies but {len(ids)} identifiers. "
              f"The identifier file must come from the SAME collection, via the IUC "
@@ -108,11 +139,87 @@ TOOLS = (
 )
 
 
+#: ⚠ Galaxy interpolates `$(...)` ANYWHERE in `shell_command`, heredocs included, so a NESTED
+#: `$(...)` -- shell command substitution wrapped around a Galaxy expression -- is consumed as a
+#: Galaxy expression and the command line cannot be built. scripts/build_softmask_udts.py has
+#: refused this since it was written; this generator emitted it in two tools, and neither had ever
+#: run. Assert on the RENDERED text, which is the only place the mistake is visible.
+#: ⚠ Galaxy interpolates this two-character opener ANYWHERE in a shell_command, heredocs
+#: included. scripts/build_softmask_udts.py has refused it in helper bodies since it was
+#: written; this generator did not, and shipped two tools that could never build a command.
+FORBIDDEN = "$("
+
+
+def assert_no_nested_substitution(rendered: dict[str, str]) -> None:
+    """Refuse any `$(` nested inside another `$(` in a tool's shell_command.
+
+    ⛔ WHY THIS MATTERS: Galaxy owns `$(...)` in a shell_command and interpolates it ANYWHERE,
+    heredocs included, so a shell command substitution wrapped around a Galaxy expression has its
+    OUTER form eaten and the job dies at command-build with an empty command line -- measured on
+    both 26.1 and 25.0. The documented escape for a literal shell substitution is `\\$(...)`.
+
+    ⚠ A REGEX CANNOT DO THIS, AND THE FIRST VERSION TRIED. `\\$\\((?:[^()]*\\$\\()` requires the two
+    openers to have NO parenthesis between them, so every one of these slipped through -- each the
+    exact construct the guard exists to refuse:
+        $( (cat) ; cat '$(inputs.x.path)')
+        $(tr -d '()' < '$(inputs.x.path)')
+        $(python3 -c 'print(0)' '$(inputs.x.path)')
+    Scan with a depth counter instead.
+
+    ⚠ AND IT MUST READ shell_command ONLY. Run over the whole rendered YAML it also saw `help:`
+    prose, so any two mentions of the opener with no `)` between them failed the build -- which is
+    why two helper scripts carry a note telling their own authors not to write the sequence down.
+    A guard that shapes the documentation away from naming the hazard is doing harm.
+    """
+    import yaml as _yaml
+    for name, text in rendered.items():
+        cmd = (_yaml.safe_load(text) or {}).get("shell_command") or ""
+        i = 0
+        while (i := cmd.find("$(", i)) != -1:
+            if i and cmd[i - 1] == "\\":          # the documented escape: passed to the shell
+                i += 2
+                continue
+            depth, j = 0, i
+            while j < len(cmd):
+                if cmd[j] == "(":
+                    depth += 1
+                elif cmd[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            inner = cmd[i + 2:j]
+            k = inner.find("$(")
+            if k != -1 and (k == 0 or inner[k - 1] != "\\"):
+                line = cmd[:i].count("\n") + 1
+                raise SystemExit(
+                    f"REFUSING: {name} shell_command line {line} nests `$(` inside `$(`. Galaxy "
+                    f"interpolates the outer one as an expression and the job fails with an empty "
+                    f"command line before anything runs. Pass the PATH and let the inlined script "
+                    f"read the file, or escape a literal shell substitution as \\$(...).")
+            i = j + 1
+
+
 def build() -> dict[str, str]:
     out: dict[str, str] = {}
+    # ⛔ SOURMASH_GLUE IS INLINED INTO THE SAME HEREDOC AND WAS CHECKED BY NOTHING. The FORBIDDEN
+    # test below covers helpers read from tools/; this constant is not read from tools/, so a `$(`
+    # added to it would have been shipped. Same body, same hazard, same check.
+    if FORBIDDEN in SOURMASH_GLUE:
+        raise SystemExit(f"REFUSING: SOURMASH_GLUE contains `{FORBIDDEN}`, which Galaxy would "
+                         f"interpolate inside the heredoc. Describe the sequence, do not write it.")
     out["sourmash_panel.gxtool.yml"] = sourmash_udt()
     for stem, tool_id, helper, name, description, ext, label in TOOLS:
         script = (ROOT / helper).read_text(encoding="utf-8").rstrip("\n")
+        # ⛔ THE SAME CHECK build_softmask_udts.read_helper MAKES, AND FOR THE SAME REASON. Galaxy
+        # interpolates the two-character opener ANYWHERE in a shell_command, heredocs included, so
+        # a helper carrying one -- even inside a comment or an f-string -- is rewritten on its way
+        # into the tool. assert_no_nested_substitution below only sees the NESTED form; a bare one
+        # inlined from tools/ passes it and fails at command-build time with an empty command.
+        if FORBIDDEN in script:
+            raise SystemExit(
+                f"REFUSING: {helper} contains `{FORBIDDEN}`, which Galaxy would interpolate inside "
+                f"the heredoc, corrupting the inlined script. Describe the sequence, do not write it.")
         indented = "\n".join(f"  {ln}" if ln else "" for ln in script.splitlines())
         out[f"{stem}.gxtool.yml"] = HEADER + f"""class: GalaxyUserTool
 id: {tool_id}
@@ -124,7 +231,7 @@ shell_command: |
   cat > {stem}.py <<'BRC_PY'
 {indented}
   BRC_PY
-  python3 {stem}.py --ids "$(tr '\\n' ' ' < '$(inputs.identifiers.path)')" --out {stem}.{ext}
+  python3 {stem}.py --ids-file '$(inputs.identifiers.path)' --out {stem}.{ext}
 inputs:
   - name: identifiers
     type: data
@@ -155,6 +262,12 @@ help:
     a self-pair list built from the wrong collection removes nothing, and a relabel map built from
     the wrong one renames nothing, both silently.
 """
+    assert_no_nested_substitution(out)
+    _stale = _check_orphans(out)
+    if _stale:
+        raise SystemExit(f"REFUSING: {len(_stale)} UDT(s) carry this generator's header but are no "
+                         f"longer produced by build(): {_stale}. A renamed key leaves the old file "
+                         f"behind, committed and checked by nothing. Delete it or restore its key.")
     return out
 
 
@@ -230,6 +343,26 @@ help:
     The signature names are written by `sourmash sketch --name`, so the labels in the CSV come from
     the sketches themselves rather than from a post-hoc rename.
 """
+
+def _check_orphans(rendered: dict[str, str]) -> list[str]:
+    """UDT files on disk that carry THIS generator's header but no longer correspond to an output.
+
+    ⛔ RENAMING A KEY LEAVES THE OLD FILE BEHIND, CHECKED BY NOTHING. `--check` iterates what
+    build() PRODUCES, so a file it no longer produces is simply never visited; and the sibling
+    generator's orphan sweep exempts anything whose header names a different generator -- which is
+    exactly what these carry. A committed, registerable, referenced-by-nothing UDT was invisible to
+    all three checkers. Enumerate the DISK and subtract.
+    """
+    udt_dir = ROOT / "udt"
+    stale = []
+    for f in sorted(udt_dir.glob("*.gxtool.yml")):
+        if f.name in rendered:
+            continue
+        head = f.read_text(encoding="utf-8")[:400]
+        if "build_inventory_udts.py" in head:
+            stale.append(f.name)
+    return stale
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
