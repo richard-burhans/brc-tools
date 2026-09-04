@@ -53,7 +53,7 @@ def command_text(xml: pathlib.Path) -> str:
     correct for exactly this because the hash only has to agree with the generator, and disagreeing
     is the alarm this script exists to raise.
     """
-    m = re.search(r"<command[^>]*>(.*?)</command>", xml.read_text(), re.S)
+    m = re.search(r"<command[^>]*>(.*?)</command>", xml.read_text(), re.DOTALL)
     if not m:
         return ""
     body = m.group(1)

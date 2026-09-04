@@ -157,6 +157,11 @@ MASKER_COLUMNS = ("dustmasker", "windowmasker", "tantan", "fastan", "union")
 #: UDTs that live in udt/ but are deliberately NOT generated, with the reason.
 #: ⚠ Anything here is exempt from the staleness check, so the list should stay short.
 HAND_WRITTEN_UDTS = frozenset({
+    # The anchor half of WF-A. Hand-written because its awk is not a helper under tools/ that this
+    # generator inlines -- it is a reimplementation of tools/anchor_prep/build_anchor_inputs.py,
+    # verified byte-identical against it rather than generated from it. Left undeclared it is an
+    # ORPHAN to --check, which turns udt-drift red on every PR touching udt/**.
+    "anchor_prep.gxtool.yml",
     # A diagnostic, not part of the workflow: it dumps the job container's environment so the
     # platform claims in these tools' help text rest on a measurement. Nothing generates it because
     # nothing in tools/ corresponds to it.
