@@ -26,7 +26,7 @@ shell_command: |
   # ⚠ FILTERED ONCE AND USED FOR EVERY PASS. The BED12 and the isoforms table are only trustworthy
   # because they come from ONE annotation; deriving them from different files would let their
   # transcript ids disagree, which is the exact failure anchor_prep exists to prevent.
-  BEGIN { FS = "\t"; OFS = "\t" }
+  BEGIN { FS = "\t"; OFS = "\t"; RS = "\r\n|\r|\n" }
   # ⛔ CRLF SILENTLY EMPTIES THE BED12, AND EXITS 0. build_anchor_inputs.py opens the GFF3 in TEXT
   # mode, so Python's universal newlines strip the `\r` for it; awk with the default RS does not,
   # and gffread strips it in its own BED output. The two sides then disagree about the gene id --
@@ -34,21 +34,75 @@ shell_command: |
   # dropped: 0-byte BED12, exit 0, `npc` and `niso` both non-zero so the empty-anchor guard never
   # fires. Measured on an NCBI-shaped GFF3 converted to CRLF. Stripping HERE fixes every pass at
   # once, because passes 1 and 3 and gffread all read `nuclear.gff3`, not the raw input.
-  { sub(/\r$/, "") }
-  /^#/  { print; next }
-  NF < 7 { print; next }
+  #
+  # ⛔ AND `RS`, NOT JUST A SUBSTITUTION -- THE RECORD BOUNDARIES ARE THE HALF THAT MATTERS.
+  # `sub(/\r$/, "")` handles `\r\n` and nothing else. A file with a block of LONE-`\r`
+  # terminators -- a chunk pasted from a Mac-line-ending source, or a file assembled from two
+  # provenances -- is read by awk as ONE record, so pass 1 collects none of that block's gene ids
+  # while gffread (which does split on `\r`) emits all of their rows, and pass 2 then drops them
+  # as "not protein-coding". Measured: 8 genes in, 5 kept, three genes gone from BOTH outputs,
+  # exit 0, and the only signal is `kept 5/8` on stderr -- which is exactly what a working
+  # protein-coding filter looks like. Python's open() is in universal-newlines mode and got all 8.
+  # `\r\r\n` (unix2dos over an already-CRLF file) left one CR behind for the same reason and
+  # emptied the BED12. RS splits the records the way Python does; gsub cleans what is left.
+  { gsub(/\r/, "") }
+  /^#/  { if (pass == 2) print; next }
+  NF < 7 { if (pass == 2) print; next }
+  # A feature whose transcript was condemned in pass 1 goes with it.
+  pass == 2 {
+      kid = ""; kin = ""
+      m = split($9, b, ";")
+      for (j = 1; j <= m; j++) {
+          if (substr(b[j], 1, 3) == "ID=") kid = substr(b[j], 4)
+          else if (substr(b[j], 1, 7) == "Parent=") kin = substr(b[j], 8)
+      }
+      if ((kid != "" && kid in bad) || (kin != "" && kin in bad)) { collateral++; next }
+  }
     # ⛔ ONLY `?` IS UNPARSEABLE. GFF3 column 7 has FOUR legal values -- `+ - . ?` -- and `.` means
   # "not stranded", which gffread reads without complaint. Dropping it lost a real BED12 row and
   # reported it as an unparseable strand: both a silent data loss and a false explanation of it.
-  $7 == "+" || $7 == "-" || $7 == "." { print; next }
-  { dropped++; seqs[$1] = 1 }
+  # ⛔ FIRST CHARACTER, AS gffread ITSELF DOES. Measured against gffread 0.12.7: it validates on
+  # substr($7,1,1), so `+ ` (a trailing blank) and `-1` are ACCEPTED and read as `+`/`-`, while
+  # exact equality dropped them -- losing a real BED12 row and reporting it as an unparseable
+  # strand, which is both silent data loss and a false explanation. `?`, ``, ` `, `1` and `plus`
+  # are genuinely rejected by gffread (it aborts and emits ZERO records), and are still dropped.
+  substr($7, 1, 1) == "+" || substr($7, 1, 1) == "-" || substr($7, 1, 1) == "." {
+      if (pass == 2) print
+      next
+  }
+  # ⛔ AND A DROPPED FEATURE TAKES ITS WHOLE TRANSCRIPT WITH IT. Dropping features one at a time
+  # left the transcript standing with its remaining exons: a two-exon gene whose second exon
+  # carried `?` came out of gffread as a ONE-block BED12 with chromEnd pulled back from 2000 to
+  # 1300 -- a gene 30% of its real length, exit 0, and the only note was the generic "dropped 1
+  # feature(s) with an unparseable strand", which reads as "an organellar oddity was removed" and
+  # not as "a nuclear gene lost an exon". TOGA2 then projects the truncated structure and reports
+  # it as a successful projection. Pass 1 collects the transcripts implicated; pass 2 drops them
+  # whole, and the warning names them.
+  {
+      id = ""; parent = ""
+      n = split($9, a, ";")
+      for (i = 1; i <= n; i++) {
+          if (substr(a[i], 1, 3) == "ID=") id = substr(a[i], 4)
+          else if (substr(a[i], 1, 7) == "Parent=") parent = substr(a[i], 8)
+      }
+      if (pass == 1) {
+          dropped++
+          seqs[$1] = 1
+          if (id != "") bad[id] = 1
+          if (parent != "") bad[parent] = 1
+      }
+      next
+  }
   END {
       if (dropped > 0) {
           s = ""
           for (k in seqs) s = s (s == "" ? "" : ",") k
-          printf "anchor_prep: dropped %d feature(s) with an unparseable strand, on %s -- gffread " \
+          for (k in bad) names = names (names == "" ? "" : ",") k
+          printf "anchor_prep: dropped %d feature(s) with an unparseable strand (and %d more " \
+                 "belonging to the same transcripts: %s), on %s -- gffread " \
                  "cannot read them and would emit nothing at all. Anchors are nuclear; organellar " \
-                 "trans-spliced genes do not belong in a TOGA2 reference.\n", dropped, s > "/dev/stderr"
+                 "trans-spliced genes do not belong in a TOGA2 reference.\n", \
+                 dropped, collateral + 0, names, s > "/dev/stderr"
       }
   }
   BRC_AWK
@@ -159,7 +213,17 @@ shell_command: |
       # the port contract this file opens with. It also contradicted the pass-2 fallback above,
       # where `npc == 0` means KEEP EVERYTHING because the gene set was not recognised. Only the
       # case where NOTHING AT ALL parsed is unambiguously an unreadable input.
-      if (npc == 0 && niso == 0) {
+      # ⛔ AND `n_kept == 0` TOO, BECAUSE THE COUNTERS THIS GUARD READS ARE NOT THE OUTPUT. It
+      # asks whether pass 1 and pass 3 recognised anything, and refuses on that alone -- so it
+      # threw away BED12s that were already written, already correct, and byte-identical to
+      # build_anchor_inputs.py's. Measured on five classes, all exit 1 against the Python's exit 0:
+      # gffread's OWN normalised output (it writes `mRNA` with `geneID=` and no `Parent=`, and
+      # drops the gene lines, so npc=0 and niso=0 while 2/2 rows are kept), StringTie/AUGUSTUS/EVM
+      # `transcript`+`exon` output, an ncRNA-only anchor, a GTF-derived GFF3, and 1 of 25 randomly
+      # generated plausible annotations. The internal contradiction is the tell: an annotation WITH
+      # gene lines and `transcript`-typed transcripts already exits 0 with an empty isoforms table,
+      # and the identical downstream situation without gene lines exited 1.
+      if (npc == 0 && niso == 0 && n_kept == 0) {
           msg = "⛔ anchor_prep: parsed " npc " gene(s) and " niso " mRNA(s) -- NEITHER. An"
           msg = msg " annotation with no genes AND no mRNAs is not readable GFF3."
           msg = msg " A gzipped file stored under the gff3 datatype reads as BINARY and looks"
@@ -211,7 +275,7 @@ shell_command: |
   # EMPTY BED12 and an EMPTY isoforms table with exit 0 -- see the guard below.
   { if gzip -t '$(inputs.input.path)' 2>/dev/null; then gzip -cd '$(inputs.input.path)'; \
     else cat '$(inputs.input.path)'; fi; } > input.gff3 &&
-  awk -f strand_filter.awk input.gff3 > nuclear.gff3 &&
+  awk -f strand_filter.awk pass=1 input.gff3 pass=2 input.gff3 > nuclear.gff3 &&
   gffread --bed nuclear.gff3 -o raw.bed12 &&
   awk -f anchor_prep.awk -v out_bed=anchor.bed12 -v out_iso=anchor.isoforms.tsv \
       pass=1 nuclear.gff3 pass=2 raw.bed12 pass=3 nuclear.gff3

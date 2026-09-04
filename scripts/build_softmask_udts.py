@@ -351,7 +351,15 @@ def build() -> dict[str, str]:
 
     out["tantan_bed3.gxtool.yml"] = masker(
         "brc-tantan-bed3", "tantan -> BED3 (BRC UDT)",
-        "quay.io/biocontainers/tantan:51--h4ac6f70_0",
+        # ⛔ THIS TAG WAS A GUESS AND IT DOES NOT EXIST. `51--h4ac6f70_0`: quay reports zero tags
+        # for it and depot.galaxyproject.org 404s. The tool REGISTERS fine on usegalaxy.org --
+        # creating a UDT does not resolve its image -- so it fails only at job start, with
+        # `manifest unknown`, which means WF-B's UDT edition has never run end to end. The
+        # udt-authoring skill names guessing the `--<hash>_<build>` suffix as the single most
+        # common real UDT failure, and this is that failure. `51--h5ca1c30_1` is one of the two
+        # builds that actually exist (quay: 1 tag, depot: HTTP 200); check_udt_definitions.py
+        # --check-containers now asks, so a guess cannot ship again.
+        "quay.io/biocontainers/tantan:51--h5ca1c30_1",
         "tantan gentle low-complexity intervals, stage 1 of 2",
         "  tantan upper.fa | awk -f lc2bed.awk > intervals.bed3",
         "tools/tantan/lc2bed.awk", "lc2bed.awk")
