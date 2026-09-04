@@ -76,8 +76,20 @@ def load_liftoff_clean(gff_path):
             if ftype in GENE_TYPES:
                 attrs = parse_gff_attributes(fields[8])
                 gid = attrs.get('ID', '')
+                # ⛔ ASK LIFTOFF, DO NOT GUESS FROM THE NAME -- see the long note on
+                # normalize_gene_id in phase_c2_triage.py, which this is the second copy of.
+                # Stripping any `_<1-2 digits>` suffix on sight cannot tell an extra copy from a
+                # reference gene named `SICAvar_1`, and it made this function merge two real genes
+                # under one invented key: three genes in, four classification rows out, two of them
+                # claiming genes were never projected that the GFF3 beside them reports as intact.
+                # `extra_copy_number` is written by Liftoff on every gene it projects and survives
+                # into liftoff_clean.gff3, because triage streams the original lines through.
                 ref_id = gid
-                if '_' in gid:
+                try:
+                    copies = int(str(attrs.get('extra_copy_number', '0')).strip() or '0')
+                except ValueError:
+                    copies = 0
+                if copies > 0 and '_' in gid:
                     parts = gid.rsplit('_', 1)
                     if len(parts[1]) <= 2 and parts[1].isdigit() and not parts[0].endswith('_'):
                         ref_id = parts[0]

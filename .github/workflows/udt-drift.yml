@@ -11,11 +11,13 @@ on:
     # them runs no check at all -- and `workflows/**` matters because the port checker reads those.
     paths: ['tools/**', 'udt/**', 'workflows/**',
             'scripts/build_softmask_udts.py', 'scripts/build_inventory_udts.py',
+            'scripts/build_projection_udts.py',
             'scripts/check_udt_provenance.py', 'scripts/check_udt_definitions.py',
             'scripts/check_workflow_ports.py', 'scripts/check_coordinates.py']
   pull_request:
     paths: ['tools/**', 'udt/**', 'workflows/**',
             'scripts/build_softmask_udts.py', 'scripts/build_inventory_udts.py',
+            'scripts/build_projection_udts.py',
             'scripts/check_udt_provenance.py', 'scripts/check_udt_definitions.py',
             'scripts/check_workflow_ports.py', 'scripts/check_coordinates.py']
 
@@ -45,6 +47,12 @@ jobs:
       # inlined copy and the wrapper's own helper from drifting apart.
       - name: Inventory UDTs match their helpers
         run: python3 scripts/build_inventory_udts.py --check
+
+      # WF-C2's three tools inline their Python the same way. A generator with no --check step in
+      # CI is a generator whose output goes stale silently -- which is the whole failure this job
+      # exists to prevent, so a new generator has to be added here when it lands.
+      - name: Projection UDTs match their helpers
+        run: python3 scripts/build_projection_udts.py --check
   # The generator checks above ask "does udt/ match its sources?". This one asks a different
   # question -- "are these tools CORRECT?" -- against the udt-authoring skill's schema, templating
   # and common-mistakes references, plus the silent-success cases found by attacking the tools with
