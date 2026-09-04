@@ -2,7 +2,10 @@
 """Emit `{a}_{b}\t{a}.{b}` for every ordered pair of collection element identifiers.
 The cross-product cells are named `A_B` (underscore join); downstream Phase E expects
 `A.B`. This 2-col TSV drives WF-C's __RELABEL_FROM_FILE__ step."""
-import argparse, itertools
+import argparse
+import itertools
+import pathlib
+
 ap = argparse.ArgumentParser()
 # ⛔ `--ids-file` EXISTS BECAUSE A UDT CANNOT BUILD `--ids`. The UDT template used a shell
 # command substitution wrapped around a Galaxy expression to turn the identifier FILE into a
@@ -40,7 +43,9 @@ if a.ids is not None and a.ids_file is not None:
 # ⚠ utf-8-SIG, NOT utf-8. A BOM on a hand-made identifier file survives into the first name --
 # `\ufeffcs10` -- which then matches no collection element, silently no-opping exactly one row.
 ids = ([x for x in a.ids.split() if x] if a.ids is not None
-       else [x.strip() for x in open(a.ids_file, encoding="utf-8-sig") if x.strip()])
+       else [x.strip() for x in
+             pathlib.Path(a.ids_file).read_text(encoding="utf-8-sig").splitlines()
+             if x.strip()])
 # ⛔ A TAB IN AN IDENTIFIER BREAKS THE COLUMN CONTRACT DOWNSTREAM. relabel_map emits
 # `{a}_{b}<TAB>{a}.{b}`, so a tab inside a name yields a THREE-column row and
 # `__RELABEL_FROM_FILE__` reads the wrong field. --ids could never carry one (it splits on
@@ -49,6 +54,5 @@ _bad = [i for i in ids if "\t" in i]
 if _bad:
     raise SystemExit(f"identifier(s) contain a tab, which breaks the output's column contract: "
                      f"{_bad[:3]}")
-with open(a.out, "w") as f:
-    for x, y in itertools.product(ids, ids):
-        f.write(f"{x}_{y}\t{x}.{y}\n")
+pathlib.Path(a.out).write_text(
+    "".join(f"{x}_{y}\t{x}.{y}\n" for x, y in itertools.product(ids, ids)))

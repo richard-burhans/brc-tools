@@ -79,7 +79,7 @@ class GeneRecord:
         self.transcripts = []
 
 
-def normalize_gene_id(gid: str, attrs: dict = None) -> str:
+def normalize_gene_id(gid: str, attrs: dict | None = None) -> str:
     """The reference gene this projection belongs to.
 
     ⛔ ASK LIFTOFF, DO NOT GUESS FROM THE NAME. This used to strip any `_<1-2 digits>` suffix on

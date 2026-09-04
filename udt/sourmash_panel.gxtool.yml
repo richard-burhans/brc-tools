@@ -22,6 +22,7 @@ shell_command: |
   """
   import argparse
   import json
+  import pathlib
   import re
   import subprocess
   import sys
@@ -39,12 +40,12 @@ shell_command: |
   # File records and every one was missed, which is why WF-A could never sketch anything. Parse it as
   # JSON, and fall back to the pattern only if that fails, so a future change in render shape
   # degrades loudly instead of silently finding zero.
-  _raw = open(a.rendered).read()
+  _raw = pathlib.Path(a.rendered).read_text()
   _json_ok = True
   try:
       _recs = json.loads(_raw[_raw.index("["):_raw.rindex("]") + 1])
       paths = [r["path"] for r in _recs if isinstance(r, dict) and r.get("path")]
-  except Exception:
+  except Exception:                                   # noqa: BLE001 -- see below
       # ⚠ THE FALLBACK IS A DIAGNOSTIC, NOT A SECOND PARSER. Once it scraped even ONE path the
       # render fault below stopped firing and the count check took over -- so a render shaped
       # {"class":"File","path":...} instead of a list, which is exactly the "future change in render
@@ -57,7 +58,8 @@ shell_command: |
   # A BOM survives `.strip()` and lands in the first name, so the matrix comes out labelled
   # `﻿cs10` -- which then joins against nothing in the self-pair or relabel files built from the
   # SAME file. Measured. A tab is rejected there and was accepted here; the CSV header took it.
-  ids = [x.strip() for x in open(a.ids, encoding="utf-8-sig") if x.strip()]
+  ids = [x.strip() for x in
+         pathlib.Path(a.ids).read_text(encoding="utf-8-sig").splitlines() if x.strip()]
   _bad = [i for i in ids if "	" in i]
   if _bad:
       sys.exit(f"identifier(s) contain a tab, which lands in the similarity matrix header and breaks "
@@ -104,7 +106,7 @@ shell_command: |
                f"The identifier file must come from the SAME collection, via the IUC "
                f"collection_element_identifiers tool.")
   subprocess.run(["mkdir", "-p", "stage"], check=True)
-  for _i, (path, name) in enumerate(zip(paths, ids)):
+  for _i, (path, name) in enumerate(zip(paths, ids, strict=True)):
       sig = f"stage/{_i:04d}.sig"
       subprocess.run(["sourmash", "sketch", "dna", "-p", f"k={a.ksize},scaled={a.scaled}",
                       "--name", name, "-o", sig, path], check=True)
@@ -115,7 +117,7 @@ shell_command: |
       # `0.0, 1.0, 0.0`, exit 0. So a panel member that failed upstream, or any small-genome member
       # (an organelle, a plasmid, an apicoplast), reads as "shares nothing with anyone" and this
       # matrix feeds WF-I's fold order. The count assertion above cannot see it; only the hashes can.
-      _n = sum(len(s.get("mins") or []) for rec in json.load(open(sig))
+      _n = sum(len(s.get("mins") or []) for rec in json.loads(pathlib.Path(sig).read_text())
                for s in (rec.get("signatures") or []))
       # ⚠ AND THE BOUNDARY IS NOT ZERO. The harm this describes -- a row that reads "shares nothing
       # with anyone" -- is a property of a SMALL sketch, not of an empty one. Measured at

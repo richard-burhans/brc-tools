@@ -124,7 +124,13 @@ def fill_step_defaults(gi: GalaxyInstance, native: dict) -> None:
             continue
         try:
             spec = gi.tools.show_tool(tool_id, io_details=True)
-        except Exception as exc:                       # a UDT is not in /api/tools at all
+        # ⚠ A DELIBERATE BROAD-EXCEPT BOUNDARY, which is the one case ruff.toml's own comment
+        # anticipates ("those sites carry an inline noqa with the rationale"). A UDT is registered
+        # per-user and is not in /api/tools at ALL, so show_tool 404s for every `brc-*` id -- and
+        # a 404 here is expected, not a failure: the step simply keeps the state the workflow
+        # names. Narrowing this to HTTPError would still swallow the same case while letting a
+        # transport error abort a render that has already resolved every other step.
+        except Exception as exc:  # noqa: BLE001 -- see above; the message is printed, never swallowed
             print(f"    {tool_id}: defaults not fetched ({str(exc)[:40]})")
             continue
         state = json.loads(step["tool_state"])

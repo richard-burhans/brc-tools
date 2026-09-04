@@ -27,6 +27,7 @@ All three are pure functions of the two collections' element identifiers, so
 nothing has to be hand-authored per panel.
 """
 import argparse
+import pathlib
 
 
 def parse_args(argv=None):
@@ -79,7 +80,9 @@ def identifiers(inline, path, what):
                          f"argument cannot round-trip; pass --{what}s-file, which carries them "
                          f"verbatim, one per line")
     ids = ([x for x in inline.split() if x] if inline is not None
-           else [x.strip() for x in open(path, encoding="utf-8-sig") if x.strip()])
+           else [x.strip() for x in
+                 pathlib.Path(path).read_text(encoding="utf-8-sig").splitlines()
+                 if x.strip()])
     # ⛔ ANY WHITESPACE, NOT JUST A TAB. Galaxy permits a space in an element identifier, and a
     # space-JOINED argument cannot carry one: `P knowlesi H` arrives as three anchors, which
     # produced a nine-row keep list naming chains that do not exist, exit 0, against the correct
@@ -141,11 +144,9 @@ def main(argv=None):
         raise SystemExit(f"the grid is empty: {len(anchors)} anchor(s) against {len(strains)} "
                          f"strain(s) leaves no cell once the anchor self-cells are dropped. "
                          f"A panel needs at least one genome that is not an anchor.")
-    with open(args.keep, "w") as kf, open(args.relabel, "w") as rf, open(args.order, "w") as of:
-        for a, q in pairs:
-            kf.write(f"{a}.{q}\n")
-            rf.write(f"{a}.{q}\t{a}_{q}\n")
-            of.write(f"{a}_{q}\n")
+    pathlib.Path(args.keep).write_text("".join(f"{a}.{q}\n" for a, q in pairs))
+    pathlib.Path(args.relabel).write_text("".join(f"{a}.{q}\t{a}_{q}\n" for a, q in pairs))
+    pathlib.Path(args.order).write_text("".join(f"{a}_{q}\n" for a, q in pairs))
     return 0
 
 
