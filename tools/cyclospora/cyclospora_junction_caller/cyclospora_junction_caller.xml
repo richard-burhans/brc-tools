@@ -1,0 +1,282 @@
+<tool id="cyclospora_junction_caller" name="Cyclospora Mt-Junction caller" version="@TOOL_VERSION@+galaxy@VERSION_SUFFIX@" profile="@PROFILE@">
+    <description>anchor-and-count repeat-length calls for the 8th CDC marker, from reads</description>
+    <macros>
+        <import>macros.xml</import>
+    </macros>
+    <expand macro="requirements"/>
+    <required_files>
+        <include path="junction_caller.py"/>
+        <include path="refs/junction.fa"/>
+    </required_files>
+    <version_command><![CDATA[python3 -c "import sys; print('cyclospora junction caller @TOOL_VERSION@ (python %s)' % sys.version.split()[0])"]]></version_command>
+    <command detect_errors="aggressive"><![CDATA[
+## ------------------------------------------------------------------
+## Galaxy runs the container with --contain --cleanenv --no-mount tmp,
+## so /tmp inside is the image's own read-only one and TMPDIR arrives
+## empty. Point scratch at the job directory, which IS bind-mounted.
+## ------------------------------------------------------------------
+mkdir -p wrk && export TMPDIR="\$(pwd)/wrk" &&
+
+## ------------------------------------------------------------------
+## Specimen id. An explicit name wins; otherwise take the element
+## identifier of the reads, which is what a collection element carries.
+## Keep only characters that are safe in a shell word and in a sheet
+## column, so no quoting hazard can reach the command line.
+## ------------------------------------------------------------------
+#set $raw = str($specimen_name).strip()
+#if not $raw
+    #if $reads.reads_source == 'bam'
+        #set $raw = str($reads.bam_input.element_identifier)
+    #elif $reads.reads_source == 'fastq_collection'
+        #set $raw = str($reads.fastq_collection.element_identifier)
+    #else
+        #set $raw = str($reads.fastq1.element_identifier)
+    #end if
+#end if
+#set $spec = "".join([c for c in $raw if c.isalnum() or c in "._-"])
+#if not $spec
+    #set $spec = "specimen"
+#end if
+
+## ------------------------------------------------------------------
+## Stage inputs under real names. Galaxy datasets are extensionless
+## .dat files; the caller decides gzip vs plain text from the suffix.
+## ------------------------------------------------------------------
+#if $reads.reads_source == 'bam'
+ln -s '$reads.bam_input' 'reads.bam' &&
+#elif $reads.reads_source == 'fastq_collection'
+ln -s '$reads.fastq_collection.forward' 'reads_R1.${reads.fastq_collection.forward.ext}' &&
+ln -s '$reads.fastq_collection.reverse' 'reads_R2.${reads.fastq_collection.reverse.ext}' &&
+#else
+ln -s '$reads.fastq1' 'reads_R1.${reads.fastq1.ext}' &&
+ln -s '$reads.fastq2' 'reads_R2.${reads.fastq2.ext}' &&
+#end if
+
+python3 '$__tool_directory__/junction_caller.py'
+    --specimen '$spec'
+#if $reference.ref_source == 'history'
+    --junction-ref '$reference.junction_ref'
+#else
+    --junction-ref '$__tool_directory__/refs/junction.fa'
+#end if
+#if $reads.reads_source == 'bam'
+    --bam 'reads.bam'
+#elif $reads.reads_source == 'fastq_collection'
+    --fastq 'reads_R1.${reads.fastq_collection.forward.ext}' 'reads_R2.${reads.fastq_collection.reverse.ext}'
+#else
+    --fastq 'reads_R1.${reads.fastq1.ext}' 'reads_R2.${reads.fastq2.ext}'
+#end if
+    --min-reads $min_reads
+    --min-freq $min_freq
+    $emit_specimen_column
+#if $emit_diag
+    --diag '$diag'
+#end if
+    --out '$junction'
+    ]]></command>
+    <inputs>
+        <conditional name="reads">
+            <param name="reads_source" type="select" label="Reads to scan"
+                   help="READS, not the marker-aligned BAM. The junction locus is not a contig in markers.fa, so a filtered marker BAM contains no junction reads at all and yields NO_CALL / marker_absent with flank_reads=0 for every specimen. That failure looks exactly like a clean negative.">
+                <option value="fastq_pair" selected="true">Paired FASTQ, two datasets</option>
+                <option value="fastq_collection">Paired FASTQ, one paired collection</option>
+                <option value="bam">BAM of unaligned reads (uBAM, or the unmapped fraction)</option>
+            </param>
+            <when value="fastq_pair">
+                <param argument="--fastq" name="fastq1" type="data" format="fastqsanger,fastqsanger.gz"
+                       label="Forward reads (R1)" help="Adapter/quality-trimmed reads, e.g. fastp output."/>
+                <param name="fastq2" type="data" format="fastqsanger,fastqsanger.gz"
+                       label="Reverse reads (R2)"/>
+            </when>
+            <when value="fastq_collection">
+                <param name="fastq_collection" type="data_collection" collection_type="paired"
+                       format="fastqsanger,fastqsanger.gz" label="Paired collection of trimmed reads"/>
+            </when>
+            <when value="bam">
+                <param argument="--bam" name="bam_input" type="data" format="unsorted.bam,qname_sorted.bam,bam"
+                       label="BAM of reads"
+                       help="An unaligned BAM, or the unmapped fraction of a mapping run. Alignment information is never used; every primary record's sequence is scanned in both orientations. Do NOT pass the marker-aligned, MAPQ-filtered BAM."/>
+            </when>
+        </conditional>
+        <param argument="--specimen" name="specimen_name" type="text" optional="true" value=""
+               label="Specimen id" help="Leave blank to use the element identifier of the reads. Characters outside A-Z a-z 0-9 . _ - are dropped.">
+            <sanitizer invalid_char="">
+                <valid initial="string.ascii_letters,string.digits">
+                    <add value="."/>
+                    <add value="_"/>
+                    <add value="-"/>
+                </valid>
+            </sanitizer>
+        </param>
+        <conditional name="reference">
+            <param name="ref_source" type="select" label="Junction reference set"
+                   help="The bundled file is CDC's MAPPING_JUNCTION_WITH_PRIMERS_FEB_2020 set, 20 records, shipped with the tool. Override only to track a newer CDC release.">
+                <option value="bundled" selected="true">Bundled with the tool (recommended)</option>
+                <option value="history">From my history</option>
+            </param>
+            <when value="bundled"/>
+            <when value="history">
+                <param argument="--junction-ref" name="junction_ref" type="data" format="fasta"
+                       label="Junction reference FASTA"
+                       help="Records must share one constant LEFT flank; the shortest record is taken as the zero-repeat class, i.e. LEFT+RIGHT."/>
+            </when>
+        </conditional>
+        <param argument="--min-reads" name="min_reads" type="integer" value="3" min="1"
+               label="Minimum spanning fragments for a call"
+               help="PRE-REGISTERED at 3. Not a relaxed gate: Tn5 cuts inside the AT-rich repeat array, so typical spanning depth is 2 to 15 fragments even at ~900k reads while thousands of reads carry only one flank."/>
+        <param argument="--min-freq" name="min_freq" type="float" value="0.05" min="0.0" max="1.0"
+               label="Minimum fraction of spanning fragments"
+               help="PRE-REGISTERED at 0.05. Mixed infections are real: every array passing both gates is emitted."/>
+        <param argument="--emit-specimen-column" name="emit_specimen_column" type="boolean"
+               truevalue="--emit-specimen-column" falsevalue="" checked="true"
+               label="Prepend a specimen column"
+               help="Keep this ON for Galaxy. A Galaxy dataset is called dataset_N.dat, so the sheet builder cannot recover the specimen id from the file name. Turn it OFF only to reproduce the reference implementation's output byte for byte."/>
+        <param name="emit_diag" type="boolean" truevalue="yes" falsevalue="" checked="false"
+               label="Also write the diagnostics JSON"
+               help="Read counters: reads_scanned, left_anchored, left_anchor_only, right_anchor_only, spanning_reads, spanning_fragments, discordant_fragments, flank_reads. This is how a true negative is told apart from the wrong input file."/>
+    </inputs>
+    <outputs>
+        <data name="junction" format="tabular" label="${tool.name} on ${on_string}: junction calls"/>
+        <data name="diag" format="json" label="${tool.name} on ${on_string}: junction diagnostics">
+            <filter>emit_diag</filter>
+        </data>
+    </outputs>
+    <tests>
+        <test expect_num_outputs="2">
+            <conditional name="reads">
+                <param name="reads_source" value="fastq_pair"/>
+                <param name="fastq1" value="junction_R1.fastq.gz" ftype="fastqsanger.gz"/>
+                <param name="fastq2" value="junction_R2.fastq.gz" ftype="fastqsanger.gz"/>
+            </conditional>
+            <param name="specimen_name" value="TEST"/>
+            <param name="emit_diag" value="true"/>
+            <output name="junction">
+                <assert_contents>
+                    <has_n_columns n="14"/>
+                    <has_n_lines n="2"/>
+                    <has_line line="specimen&#9;length_class&#9;matched_reference&#9;reads&#9;freq&#9;repeat_count&#9;ref_seq_length&#9;motifs_all_known&#9;closest_reference&#9;closest_mismatches&#9;flag&#9;total_spanning_reads&#9;flank_reads&#9;sequence"/>
+                    <has_line line="TEST&#9;214&#9;Mt_Cmt214.A_Junction_Hap_20&#9;4&#9;1.0&#9;7&#9;214&#9;yes&#9;Mt_Cmt214.A_Junction_Hap_20&#9;0&#9;ok&#9;4&#9;10&#9;TACCAAAGCATCCATCTACAGCTGCGGAAACTGTATTTTTATTATTTAATTTTACTATTTTAAATAGTATTATTTATAATAGTATTATTTATAATAGTATTATTTATAATAGTATTATTTTTAATAGTATTATTTTTAATAGTATTATTTTTAATAGTACTATTTTTAATATAAAAATTTAGTACACCTAGCCAACACGATCCGATTGCTTGGG"/>
+                </assert_contents>
+            </output>
+            <output name="diag">
+                <assert_contents>
+                    <has_text text="&quot;spanning_fragments&quot;: 4"/>
+                    <has_text text="&quot;flank_reads&quot;: 10"/>
+                </assert_contents>
+            </output>
+        </test>
+        <test expect_num_outputs="1">
+            <!-- The marker-aligned BAM is the WRONG input, and it must stay
+                 visibly wrong: flank_reads=0 plus the marker_absent flag,
+                 never an empty file that reads like a real negative. -->
+            <conditional name="reads">
+                <param name="reads_source" value="bam"/>
+                <param name="bam_input" value="parts_reads.bam" ftype="bam"/>
+            </conditional>
+            <param name="specimen_name" value="WRONGINPUT"/>
+            <output name="junction">
+                <assert_contents>
+                    <has_n_columns n="14"/>
+                    <has_n_lines n="2"/>
+                    <has_text text="NO_CALL"/>
+                    <has_text text="marker_absent"/>
+                    <has_line line="WRONGINPUT&#9;NA&#9;NO_CALL&#9;0&#9;0.0&#9;NA&#9;NA&#9;NA&#9;NA&#9;NA&#9;marker_absent&#9;0&#9;0&#9;NA"/>
+                </assert_contents>
+            </output>
+        </test>
+    </tests>
+    <help format="markdown"><![CDATA[
+**Cyclospora Mt-Junction caller** — repeat-length genotypes at the 8th CDC marker,
+by anchor-and-count over raw reads.
+
+The Mt-Junction locus is a tandem array of a 15 nt motif between two constant
+flanks:
+
+```
+[ LEFT 64 nt constant ][ array = n x 15 nt ][ RIGHT 45 nt constant ]
+```
+
+A read is **spanning** if it contains the 18 nt left anchor (the last 18 nt of
+LEFT, ending exactly at the array start) and, after it, the 18 nt right anchor.
+Reads matching only the reverse complement of the left anchor are reverse
+complemented first. What lies between is the array; its length must be a
+multiple of 15 and it must be N-free. Both mates of a fragment cover the same
+short insert, so arrays are collapsed per fragment and mates that disagree are
+discarded as discordant. There is **no assembler** anywhere in this: only 3 to 15
+fragments span the array even in a deep run.
+
+-----
+
+**Give it reads, not the marker BAM**
+
+The junction locus is *not a contig in* `markers.fa`, so junction reads never
+reach the marker-aligned, MAPQ-filtered BAM. Feeding that BAM here is not an
+error that announces itself; it silently returns `NO_CALL … marker_absent` with
+`flank_reads=0` for every specimen. Measured on `C_IA031_18`:
+
+| input | reads scanned | flank_reads | call |
+|---|---|---|---|
+| trimmed FASTQ pair | 384,530 | 1,294 | `Mt_Cmt199.A_Junction_Hap_17`, 8 fragments |
+| uBAM of the same reads | 384,530 | 1,294 | identical |
+| `C_IA031_18.filtered.bam` | 52,048 | **0** | `NO_CALL / marker_absent` |
+
+Accepted: trimmed FASTQ (two datasets or a paired collection), an unaligned BAM,
+or the unmapped fraction of a mapping run.
+
+-----
+
+**Gates — pre-registered, do not tune**
+
+* `--min-reads 3` spanning **fragments**
+* `--min-freq 0.05` of the spanning fragments
+
+The low fragment floor is a property of the library prep, not a loosened
+threshold: the array is extremely AT-rich, Tn5 prefers exactly that, so
+tagmentation cuts *inside* the array and most fragments stop there. Thousands of
+reads carry one flank while a handful span. That is also why CDC has no junction
+call for 50 of the 153 benchmark specimens.
+
+-----
+
+**Output**
+
+One tabular file, always written, one row per passing array (plus a `specimen`
+column when that option is on):
+
+`length_class`, `matched_reference`, `reads`, `freq`, `repeat_count`,
+`ref_seq_length`, `motifs_all_known`, `closest_reference`, `closest_mismatches`,
+`flag`, `total_spanning_reads`, `flank_reads`, `sequence`.
+
+`reads` counts spanning **fragments**. An array with no exact reference is
+reported as `NOVEL` with its length class — never dropped, never snapped to the
+nearest reference. When nothing passes, one `NO_CALL` row is written and `flag`
+says which kind of nothing it was:
+
+| flag | meaning |
+|---|---|
+| `marker_absent` | no read carried either flank; suspect the wrong input file |
+| `marker_present_but_no_spanning_fragment` | flanks seen, array never spanned |
+| `below_threshold` | spanning fragments seen, none passed the gates |
+
+Optional diagnostics JSON carries the counters behind that distinction.
+
+-----
+
+**Two caveats the caller keeps honouring**
+
+1. `Mt_Cmt127.A_Junction_Hap_2` is **135 bp on disk, not 127** — a truncated
+   right flank plus 11 nt of Nextera adapter. The `Cmt<length>` in a name is a
+   length class, never a key; the caller keys off repeat count and array
+   sequence only, and holds the right anchor at 18 nt so Hap_2 still matches.
+2. CDC's 2022 nomenclature contains classes absent from the Feb-2020
+   20-reference set (`Cmt139` = 2 repeats, `Cmt229` = 8), so any repeat count is
+   permitted.
+
+-----
+
+Ported from `a1_junction.py` of the LoFreq/PyEuk Cyclospora typing arm.
+Against CDC's own calls on the 153-specimen benchmark: precision 1.000,
+recall 0.971, zero disagreements.
+    ]]></help>
+    <expand macro="citations"/>
+</tool>

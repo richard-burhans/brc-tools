@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<macros>
+    <token name="@TOOL_VERSION@">1.0.0</token>
+    <token name="@VERSION_SUFFIX@">0</token>
+    <token name="@PROFILE@">26.0</token>
+
+    <!--
+        CONTAINER-ONLY tool. The Cyclospora typing arm pins an exact
+        interpreter stack (python 3.11 + numpy/scipy/pandas/sklearn/numba/pysam
+        at the versions the benchmark was measured on, plus PyEuk at commit
+        d8e45a81); nothing of that is a single bioconda package.
+
+        It is ONE container for all four Cyclospora tools, on purpose. Two or
+        more conda `requirement` entries resolve to a merged mulled-v1-HASH
+        environment that may never have been built, and the job then dies with
+        exit 1 and completely empty stderr. See the instance handoff.
+
+        Built from tools/cyclospora/container/cyclospora-typing.def:
+            apptainer build cyclospora-typing-1.0.0.sif cyclospora-typing.def
+    -->
+    <token name="@CYCLOSPORA_IMAGE@">/data/containers/cyclospora-typing-1.0.0.sif</token>
+
+    <xml name="requirements">
+        <requirements>
+            <container type="singularity">@CYCLOSPORA_IMAGE@</container>
+        </requirements>
+    </xml>
+
+    <xml name="citations">
+        <citations>
+            <citation type="bibtex"><![CDATA[
+@misc{brc_cyclospora_junction,
+  author = {Nekrutenko lab and the BRC Cyclospora typing project},
+  title  = {Cyclospora Mt-Junction repeat-length caller (anchor-and-count)},
+  year   = {2026},
+  note   = {Galaxy wrapper of a1_junction.py from the LoFreq/PyEuk arm of the
+            Cyclospora cayetanensis genotyping benchmark; reproduces the CDC
+            Mt-Junction (8th marker) calls with precision 1.000 / recall 0.971
+            over the 153-specimen benchmark set}
+}
+            ]]></citation>
+        </citations>
+    </xml>
+</macros>

@@ -41,10 +41,17 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site
-          # the I/O map is the landing page; its footer links to the A->K
-          # overview by this exact filename, so keep the name.
-          cp workflows/pipeline_io_map.html   _site/index.html
+          # The A->K overview is the front page: it shows every workflow and marks
+          # which have been reviewed. The step-level page carries the reviewed ones
+          # in detail, one tab each.
+          #
+          # Both files are ALSO published under their own names, because the two
+          # pages link to each other by those names -- which keeps the links working
+          # when the committed HTML is opened straight from the repo, and keeps any
+          # existing bookmark to pipeline_dataflow.html alive.
+          cp workflows/pipeline_dataflow.html _site/index.html
           cp workflows/pipeline_dataflow.html _site/pipeline_dataflow.html
+          cp workflows/pipeline_io_map.html   _site/pipeline_io_map.html
           ls -la _site
 
       - uses: actions/configure-pages@v5

@@ -1,0 +1,214 @@
+<tool id="cyclospora_pyeuk" name="Cyclospora PyEuk" version="@TOOL_VERSION@+galaxy@VERSION_SUFFIX@" profile="@PROFILE@">
+    <description>cluster specimens from a CDC haplotype sheet (KING-wIBS distance + label-free clustering)</description>
+    <macros>
+        <import>macros.xml</import>
+    </macros>
+    <expand macro="requirements"/>
+    <required_files>
+        <include path="pyeuk_cluster.py"/>
+    </required_files>
+    <version_command><![CDATA[python -c "import cyclospora_pyeuk; print(cyclospora_pyeuk.__version__)"]]></version_command>
+    <command detect_errors="aggressive"><![CDATA[
+@SCRATCH@
+
+python '$__tool_directory__/pyeuk_cluster.py'
+    --sheet '$sheet'
+    --matrix-out '$distance_matrix'
+    --clusters-out '$clusters'
+    --min-completeness $advanced.min_completeness
+    --k-min $advanced.k_min
+    --k-max $advanced.k_max
+    --report-excluded $advanced.report_excluded
+#if str($calibration.mode) == 'supervised'
+    --gold '$calibration.gold'
+    --stringency $calibration.stringency
+    --robust $calibration.robust
+    --default-threshold $calibration.default_threshold
+#end if
+    ]]></command>
+    <inputs>
+        <param argument="--sheet" name="sheet" type="data" format="tabular"
+               label="Haplotype data sheet (CDC HDS wide format)"
+               help="Rows are specimens, columns are haplotype names, 'X' marks presence and an empty cell absence. An ENTIRELY empty locus block means the locus was NOT CALLED; PyEuk handles that as dropout rather than as absence. Produced by the 'Cyclospora HDS sheet' tool. The first column must be named Seq_ID."/>
+        <conditional name="calibration">
+            <param name="mode" type="select" label="Cluster threshold calibration"
+                   help="Label-free is the default and is what the pre-registered analysis used: PyEuk never sees an epidemiological label and picks k from the dendrogram merge-height gap knee. Supply gold-standard labels only if you genuinely have them; the result is then no longer a blind prediction.">
+                <option value="label_free" selected="true">Label-free (unsupervised) — dendrogram merge-height gap knee</option>
+                <option value="supervised">Supervised — calibrate the threshold from gold-standard cluster labels</option>
+            </param>
+            <when value="label_free"/>
+            <when value="supervised">
+                <param argument="--gold" name="gold" type="data" format="tabular"
+                       label="Gold-standard cluster labels"
+                       help="Two columns with a header: Seq_ID and Cluster_alias. Only specimens present in both this file and the distance matrix are used to calibrate."/>
+                <param argument="--stringency" name="stringency" type="float" value="95.0" min="0.0" max="100.0"
+                       label="Stringency (%)"
+                       help="Percentage of within-cluster pairs that must fall at or below the calibrated threshold before a k is accepted."/>
+                <param argument="--robust" name="robust" type="boolean" checked="true" truevalue="true" falsevalue="false"
+                       label="Robust threshold calibration"
+                       help="Yes: median + 3 * 1.4826 * MAD of the within-cluster distances. No: mean + 3 * standard deviation."/>
+                <param argument="--default-threshold" name="default_threshold" type="float" value="0.05" min="0.0"
+                       label="Fallback threshold"
+                       help="Used only if no gold-standard specimen pair overlaps the distance matrix."/>
+            </when>
+        </conditional>
+        <section name="advanced" title="Advanced options" expanded="false">
+            <param argument="--min-completeness" name="min_completeness" type="float" value="0.10" min="0.0" max="1.0"
+                   label="Minimum specimen completeness"
+                   help="A specimen enters the distance matrix only if at least this fraction of the sheet's haplotype columns are marked 'X'. PyEuk's default is 0.10; on the 153-specimen reference sheet it keeps 144 of 153."/>
+            <param argument="--k-min" name="k_min" type="integer" value="2" min="2"
+                   label="Minimum number of clusters to consider"
+                   help="Held at 2 by PyEuk to guard against collapsing everything into a single cluster."/>
+            <param argument="--k-max" name="k_max" type="integer" value="50" min="2"
+                   label="Maximum number of clusters to consider"/>
+            <param argument="--report-excluded" name="report_excluded" type="boolean" checked="true" truevalue="true" falsevalue="false"
+                   label="Report excluded specimens as cluster -1"
+                   help="Yes: specimens dropped by the completeness filter still appear in the cluster table with Assigned_cluster = -1, so no specimen disappears silently. No: they are omitted, which reproduces PyEuk's own output file exactly."/>
+        </section>
+    </inputs>
+    <outputs>
+        <data name="distance_matrix" format="tabular"
+              label="${tool.name} on ${on_string}: wIBS distance matrix"/>
+        <data name="clusters" format="tabular"
+              label="${tool.name} on ${on_string}: cluster assignments"/>
+    </outputs>
+    <tests>
+        <!-- Label-free (default) on a 40-specimen subset of the CDC 153 sheet.
+             The subset is large enough for the knee detector's minimum
+             cluster-size guard (10% of n, floor 5) to be exercised. -->
+        <test expect_num_outputs="2">
+            <param name="sheet" value="sheet_40.tsv" ftype="tabular"/>
+            <output name="distance_matrix">
+                <assert_contents>
+                    <has_n_columns n="39"/>
+                    <has_n_lines n="39"/>
+                    <has_line_matching expression="^Seq_ID\tC_IA013_18\t.*"/>
+                    <!-- A specimen's distance to itself is exactly zero. -->
+                    <has_line_matching expression="^C_IA013_18\t0\t.*"/>
+                </assert_contents>
+            </output>
+            <output name="clusters">
+                <assert_contents>
+                    <has_n_columns n="2"/>
+                    <has_line line="Seq_ID&#9;Assigned_cluster"/>
+                    <!-- 38 of the 40 pass the completeness filter; the two that
+                         do not are reported as cluster -1 rather than dropped. -->
+                    <has_n_lines n="41"/>
+                    <has_line line="C_IA013_18&#9;1"/>
+                    <has_line line="C_IA031_18&#9;2"/>
+                    <has_line line="C_IL119_18&#9;-1"/>
+                    <has_line line="C_OH006_18&#9;-1"/>
+                </assert_contents>
+            </output>
+            <assert_command>
+                <not_has_text text="--gold"/>
+            </assert_command>
+            <assert_stdout>
+                <has_text text="mode              : label-free"/>
+                <has_text text="Prospective Unsupervised Mode"/>
+                <has_text text="k                   : 2"/>
+            </assert_stdout>
+        </test>
+        <!-- Supervised path: the same sheet with gold-standard labels. -->
+        <test expect_num_outputs="2">
+            <param name="sheet" value="sheet_40.tsv" ftype="tabular"/>
+            <conditional name="calibration">
+                <param name="mode" value="supervised"/>
+                <param name="gold" value="gold_40.tsv" ftype="tabular"/>
+            </conditional>
+            <output name="clusters">
+                <assert_contents>
+                    <has_n_columns n="2"/>
+                    <has_line line="Seq_ID&#9;Assigned_cluster"/>
+                    <has_n_lines n="41"/>
+                </assert_contents>
+            </output>
+            <assert_stdout>
+                <has_text text="mode              : supervised"/>
+                <has_text text="Supervised calibration"/>
+            </assert_stdout>
+        </test>
+        <!-- report_excluded off reproduces PyEuk's own table: the two
+             low-completeness specimens are absent entirely. -->
+        <test expect_num_outputs="2">
+            <param name="sheet" value="sheet_40.tsv" ftype="tabular"/>
+            <section name="advanced">
+                <param name="report_excluded" value="false"/>
+            </section>
+            <output name="clusters">
+                <assert_contents>
+                    <has_n_lines n="39"/>
+                    <not_has_text text="C_IL119_18"/>
+                    <not_has_text text="C_OH006_18"/>
+                </assert_contents>
+            </output>
+        </test>
+    </tests>
+    <help format="markdown"><![CDATA[
+**Cyclospora PyEuk** — turn a CDC haplotype data sheet into a specimen distance
+matrix and outbreak cluster assignments.
+
+This is stage 7-8 of the *Cyclospora cayetanensis* amplicon typing arm. It runs
+two PyEuk calls and nothing else:
+
+1. `PyEukDistanceEngine.compute_revised_wibs_matrix(sheet)` — binary
+   KING-robust weighted identity-by-state, with pairwise-complete locus dropout
+   handling and an exact positive-semi-definite projection of the Gram matrix.
+2. `CyclosporaClusterFinder.find_clusters(matrix, gold_or_None)` — Ward AGNES
+   hierarchical clustering, with the number of clusters chosen either from the
+   dendrogram merge-height gap knee (label-free, the default) or from a
+   threshold calibrated on gold-standard labels (supervised).
+
+-----
+
+**Input**
+
+- *Haplotype data sheet* — the wide CDC HDS table. Column 1 is `Seq_ID`, every
+  other column is one haplotype name, `X` means present, an empty cell means
+  absent. An **entirely empty locus block** means the locus was **not called**,
+  which PyEuk treats as dropout rather than as absence; that distinction is why
+  the sheet must be written by the `Cyclospora HDS sheet` tool rather than
+  hand-assembled from per-specimen calls.
+- *Gold-standard cluster labels* (optional, off by default) — `Seq_ID` and
+  `Cluster_alias`, with a header.
+
+**Outputs**
+
+- *wIBS distance matrix* — square, symmetric, zero diagonal. The header row and
+  the first column carry `Seq_ID`s. Only the specimens that passed the
+  completeness filter appear.
+- *Cluster assignments* — `Seq_ID` and `Assigned_cluster` (1-indexed).
+  `-1` marks a specimen that the completeness filter excluded from the distance
+  matrix; those rows are present by default so that no specimen vanishes
+  silently, and can be suppressed under **Advanced options**.
+
+-----
+
+**Label-free by default, and why that matters**
+
+The default path passes `None` where PyEuk expects a gold-standard file. No
+epidemiological label enters the computation, so the partition is a genuine
+blind prediction that can be scored afterwards. Supplying gold-standard labels
+switches PyEuk to calibrating its within-cluster distance threshold from those
+labels; the resulting clusters are then *fitted* to the labels and an accuracy
+computed against the same labels is not evidence of anything.
+
+On the CDC 153-specimen reference sheet the label-free path yields k = 2 with
+144 of 153 specimens passing the completeness filter, ARI 0.9721 against the
+Vendor_A / Vendor_B epidemiological labels.
+
+**Version pin**
+
+PyEuk is pinned to commit `d8e45a81` — the last commit of the **binary**
+KING-wIBS engine. The later SNP-weighted engine (v3.x) was benchmarked on the
+same sheets and regresses: AUC drops, 4 of 6 sheets collapse to k = 1, and the
+null controls fall from 12/12 to 10/12.
+
+**The `epsilon` parameter is not exposed**
+
+`PyEukDistanceEngine(epsilon=...)` parameterises the *Bayesian* distance. The
+revised KING-wIBS matrix computed here never reads it, so exposing it would be
+a knob with no effect. It is fixed at the engine default, 0.3072.
+    ]]></help>
+    <expand macro="citations"/>
+</tool>
