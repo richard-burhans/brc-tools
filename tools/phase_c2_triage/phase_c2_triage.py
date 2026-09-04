@@ -70,7 +70,7 @@ class GeneRecord:
 
     def __init__(self, gene_id, chrom, start, end, strand, attrs):
         self.gene_id = gene_id
-        self.reference_id = normalize_gene_id(gene_id)
+        self.reference_id = normalize_gene_id(gene_id, attrs)
         self.chrom = chrom
         self.start = start
         self.end = end
@@ -79,7 +79,33 @@ class GeneRecord:
         self.transcripts = []
 
 
-def normalize_gene_id(gid: str) -> str:
+def normalize_gene_id(gid: str, attrs: dict = None) -> str:
+    """The reference gene this projection belongs to.
+
+    ⛔ ASK LIFTOFF, DO NOT GUESS FROM THE NAME. This used to strip any `_<1-2 digits>` suffix on
+    sight, to fold Liftoff's extra-copy names (`geneX_1`) back onto their parent -- and it cannot
+    tell that from a REFERENCE GENE whose own id ends that way, which is exactly how the variant
+    gene families this pipeline exists to study are named. Measured on three cleanly projected
+    genes `SICAvar_1`, `SICAvar_2`, `PKNH_1400300`: the classification table came out with FOUR
+    rows, inventing a reference gene `SICAvar` that appears in no BED and reporting both real
+    SICAvar genes as `source=none, intactness=M` -- never projected -- while the GFF3 beside it
+    said all three were projected and intact. `SICAvar_2`'s projection vanished entirely. In
+    triage the same collision made `summary.json` disagree with itself: two genes flagged,
+    `needs_cesar2: 1`, a 50% fallback rate for a 100% fallback, and an EMPTY `needs_cesar2.bed`
+    because the invented id matched nothing in the reference.
+
+    Liftoff states the answer outright. It writes `extra_copy_number` on every gene it projects --
+    0 for the primary, >0 for a copy -- and this module already reads that attribute for rule R4
+    and already writes it into `triage.tsv`. So a suffix is stripped ONLY when Liftoff says the
+    gene is a copy. An annotation that carries no such attribute has no copies to fold, and its
+    ids are taken as given.
+    """
+    try:
+        copies = int(str((attrs or {}).get("extra_copy_number", "0")).strip() or "0")
+    except ValueError:
+        copies = 0
+    if copies <= 0:
+        return gid
     m = EXTRA_COPY_RE.match(gid)
     if not m:
         return gid
