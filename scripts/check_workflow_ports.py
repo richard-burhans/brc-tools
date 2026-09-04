@@ -111,6 +111,27 @@ def source_of(ref):
     return None
 
 
+def sources_of(ref):
+    """EVERY `step/output` a connection names -- a port may take more than one.
+
+    ⛔ `in:` HAS THREE SPELLINGS AND THIS SCRIPT KNEW TWO. Besides `port: step/out` and
+    `port: {source: step/out}`, a port that accepts multiple datasets takes a LIST of either form:
+
+        image_content_input:
+          - sourmash_panel/heatmap
+          - sourmash_panel/dendrogram
+
+    `source_of` returns None for a list, and every caller treated None as "not a connection", so
+    both of those edges were invisible -- unvalidated, uncounted for reachability, and missing from
+    the graph the collection checks below reason over. It showed up as WF-A's `assemblies` and
+    `proteomes` being reported as never meeting when they meet at exactly this port.
+    """
+    if isinstance(ref, list):
+        return [s for r in ref for s in sources_of(r)]
+    one = source_of(ref)
+    return [one] if one else []
+
+
 def addressable(key, params):
     """Does `key` name something in `params`, allowing any repeat index?"""
     if key in params:
@@ -140,6 +161,21 @@ DEFECTS = [
      "{tags: name:wfc_sizes}", "{tags: wfc_sizes}", "PLAIN-TAG"),
     ("workflows/inventory/inventory_udt.gxwf.yml", "a rename string restyled away from its target",
      "'WF-C2 input: anchor_bed12s'", "'WF-C2 input: anchor BED12'", "PARITY-DRIFT"),
+    # ⚠ THE `want` NAMES THE INPUT, NOT JUST THE CODE. Both checks below already fire on the
+    # unmodified WF-A port (for `anchor_gene_gff3s`, correctly), so a fixture that only greps for
+    # the code would pass without the injection doing anything at all -- the classic vacuous test.
+    # Naming the input the injection is supposed to newly implicate makes the case real.
+    ("workflows/inventory/inventory_udt.gxwf.yml", "a collection nothing receives whole",
+     "      assemblies: assemblies\n", "      assemblies: proteomes\n",
+     "EMPTY-COLLECTION `assemblies`"),
+    # ⚠ AND THE INJECTION HAS TO CUT THE EDGE, NOT RENAME THE PORT. Renaming
+    # `image_content_input` left both sources exactly where they were -- the graph does not care
+    # what a port is called -- so the fixture changed nothing and the case reported "not detected"
+    # while the check was working correctly.
+    ("workflows/inventory/inventory_udt.gxwf.yml", "two collections that stop meeting",
+     "      image_content_input:\n        - sourmash_panel/heatmap\n"
+     "        - sourmash_panel/dendrogram\n", "      image_content_input: []\n",
+     "UNRECONCILED `assemblies` and `proteomes`"),
     ("workflows/msa/msa.gxwf.yml", "dict-form connection to a ghost step",
      "source: group_cds_by_og/pep", "source: ghoststep/pep", "BROKEN-LINK"),
 ]
@@ -227,9 +263,7 @@ def main() -> int:
     # -- 1. every `in:` reference resolves --------------------------------------------------
     for name, s in steps.items():
         for port, raw in (s.get("in") or {}).items():
-            ref = source_of(raw)
-            if ref is None:
-                continue
+          for ref in sources_of(raw):
             if "/" not in ref:
                 if ref not in wf_in:
                     bad("BROKEN-LINK", f"{name}.{port}", f"{ref!r} is not a workflow input")
@@ -392,8 +426,8 @@ def main() -> int:
                                 f"exact name or tag. Match it, or say in `doc:` why it differs.")
 
     # -- 5. dead ends and unreachable steps -------------------------------------------------
-    consumed = {source_of(r) for s in steps.values() for r in (s.get("in") or {}).values()
-                if source_of(r)}
+    consumed = {x for s in steps.values() for r in (s.get("in") or {}).values()
+                for x in sources_of(r)}
     consumed |= {(r.get("outputSource", r) if isinstance(r, dict) else r)
                  for r in wf_out.values()}
     for name, s in steps.items():
@@ -403,16 +437,17 @@ def main() -> int:
                     notes.append(f"UNUSED    {name}/{o} — declared, consumed by nothing")
 
     reachable, frontier = set(), {n for n, s in steps.items()
-                                  if any((source_of(r) or "/") .find("/") < 0
-                                         for r in (s.get("in") or {}).values())}
+                                  if any("/" not in x
+                                         for r in (s.get("in") or {}).values()
+                                         for x in sources_of(r))}
     while frontier:
         n = frontier.pop()
         if n in reachable:
             continue
         reachable.add(n)
         frontier |= {m for m, s in steps.items()
-                     if any((source_of(r) or "").split("/")[0] == n
-                            for r in (s.get("in") or {}).values())}
+                     if any(x.split("/")[0] == n
+                            for r in (s.get("in") or {}).values() for x in sources_of(r))}
     for n in steps:
         if n in reachable:
             continue
@@ -420,7 +455,7 @@ def main() -> int:
         # declares `hub_url: {default: hub.txt}` -- a parameter, not an edge -- so nothing can
         # reach it and nothing needs to. Calling that UNREACHABLE made a correct workflow fail.
         # Only a step that HAS connections and still cannot be reached is actually stranded.
-        if not any(source_of(r) for r in (steps[n].get("in") or {}).values()):
+        if not any(sources_of(r) for r in (steps[n].get("in") or {}).values()):
             notes.append(f"ROOT      {n} — takes no dataset connection, runs on parameters alone")
         else:
             bad("UNREACHABLE", n, "has connections, but none trace back to a workflow input")
@@ -441,6 +476,7 @@ def main() -> int:
     #    reference to one that does not exist is the single likeliest hand-editing error.
     url, key = os.environ.get("GALAXY_URL", "").rstrip("/"), os.environ.get("GALAXY_API_KEY", "")
     remote = [(n, s) for n, s in steps.items() if s.get("tool_id") not in udt]
+    remote_params = {}
     if not (url and key):
         skips.append(f"REMOTE HALF SKIPPED — {len(remote)} non-UDT step(s) unchecked, including "
                      f"every reference to one of their outputs. "
@@ -454,8 +490,8 @@ def main() -> int:
                 continue
             remote_outs[name] = {o.get("name") for o in sch.get("outputs") or []}
 
-        refs = [(f"{n}.{port}", source_of(r)) for n, s in steps.items()
-                for port, r in (s.get("in") or {}).items() if source_of(r)]
+        refs = [(f"{n}.{port}", x) for n, s in steps.items()
+                for port, r in (s.get("in") or {}).items() for x in sources_of(r)]
         refs += [(f"outputs.{n}", (r.get("outputSource", r) if isinstance(r, dict) else r))
                  for n, r in wf_out.items()]
         for where, ref in refs:
@@ -490,6 +526,7 @@ def main() -> int:
                 bad("UNRESOLVED", name, f"{tid} -> {type(e).__name__}: {e}")
                 continue
             params = flatten(sch.get("inputs"))
+            remote_params[name] = params
             for key_ in list(s.get("in") or {}) + list(s.get("state") or {}):
                 if not addressable(key_, params):
                     bad("NO-SUCH-PARAM", f"{name}.{key_}",
@@ -501,6 +538,89 @@ def main() -> int:
                     notes.append(f"UNPINNED  {name}: tool_id {t2!r} carries no version; "
                                  f"{url} has {len(vs)} installed and resolves it to "
                                  f"v{sch.get('version')}")
+
+    # -- 8. an EMPTY collection input schedules, runs nothing, and succeeds -------------------
+    #    ⛔ ZERO JOBS IS NOT AN ERROR TO GALAXY. A step that maps over a collection with no
+    #    elements produces no jobs at all; its output collection is empty, everything downstream of
+    #    it is empty, and the invocation reaches `scheduled` with every job `ok` because there were
+    #    none to fail. Measured on WF-A: an empty `anchor_gene_gff3s` gives empty `anchor_bed12s`
+    #    and `anchor_isoforms` and a green run. The ONLY thing that can notice is a step that
+    #    receives the collection WHOLE -- a `data_collection` port, or a remote parameter that
+    #    accepts one -- because only that step is entered even when there is nothing in it.
+    #
+    #    ⚠ THIS IS A NOTE. Mapping over a collection is the normal shape of every workflow here,
+    #    and "an operator supplied an empty input" is not a defect in the workflow. What the note
+    #    buys is knowing WHICH inputs have nothing standing between them and a silent no-op.
+    coll_in = {n for n, spec in wf_in.items()
+               if isinstance(spec, dict) and spec.get("type") == "collection"}
+
+    def consumers(seed):
+        """(step, port) pairs taking `seed` DIRECTLY -- not through a derived collection."""
+        return [(n, port) for n, s in steps.items()
+                for port, r in (s.get("in") or {}).items() if seed in sources_of(r)]
+
+    for seed in sorted(coll_in):
+        whole, unknown = [], []
+        for n, port in consumers(seed):
+            tid = steps[n].get("tool_id", "")
+            if tid in udt:
+                spec = udt[tid]["inputs"].get(port.split("|")[0]) or {}
+                if spec.get("type") == "data_collection":
+                    whole.append(f"{n}.{port}")
+            elif n in remote_params:
+                param = remote_params[n].get(port) or {}
+                if param.get("type") == "data_collection" or param.get("multiple"):
+                    whole.append(f"{n}.{port}")
+            else:
+                unknown.append(f"{n}.{port}")           # remote half skipped: cannot say
+        if whole:
+            continue
+        tail = (f" ({len(unknown)} consumer(s) are non-UDT steps this run did not check: "
+                f"{', '.join(sorted(unknown))})" if unknown else "")
+        notes.append(f"EMPTY-COLLECTION `{seed}` is consumed element-wise ONLY, so an empty one "
+                     f"schedules zero jobs, publishes empty collections and returns a SUCCESSFUL "
+                     f"invocation. Nothing in this workflow sees it whole.{tail}")
+
+    # -- 9. two collections nothing ever compares ---------------------------------------------
+    #    ⛔ A CORRECT-LOOKING ANCHOR FOR THE WRONG GENOME PASSES EVERYTHING. WF-A takes
+    #    `assemblies` and `anchor_gene_gff3s` and hands both to WF-C/TOGA2, and `anchor_prep` never
+    #    sees an assembly: an anchor GFF3 for a different strain produces a fully populated BED12,
+    #    twelve green outputs and exit 0. The two facts that make it undetectable are STRUCTURAL
+    #    and visible from here -- the two inputs' downstream cones never meet at a step, so there
+    #    is no point in the graph at which anything COULD compare them.
+    #
+    #    ⚠ AND A JOIN IS NOT A COMPARISON, so this is a floor and not a guarantee. WF-A's
+    #    `proteomes` and `assemblies` DO meet, at multiqc -- which merges a BUSCO summary keyed by
+    #    one collection's identifiers with plots keyed by the other's and compares nothing. This
+    #    check can prove that nothing is able to compare them; it cannot prove that something does.
+    # ⚠ A FIXED POINT, NOT ONE PASS. `steps` is a mapping and its order is the order somebody
+    # typed it, so a single sweep propagates a seed only as far as the next step that happens to
+    # come later in the file. The first version of this reported WF-A's `assemblies` and
+    # `proteomes` as never meeting -- they meet at multiqc, four steps downstream of both -- which
+    # is the check inventing the finding it was written to look for. Iterate until nothing moves.
+    feeds = {n: set() for n in steps}
+    while True:
+        before = {n: set(v) for n, v in feeds.items()}
+        for n, s in steps.items():
+            for r in (s.get("in") or {}).values():
+                for ref in sources_of(r):
+                    src = ref.split("/")[0] if "/" in ref else ref
+                    feeds[n] |= ({src} & coll_in) | feeds.get(src, set())
+        if feeds == before:
+            break
+    joined = set()
+    for seeds in feeds.values():
+        for a in seeds:
+            for b in seeds:
+                if a != b:
+                    joined.add(tuple(sorted((a, b))))
+    for a, b in sorted({tuple(sorted((x, y))) for x in coll_in for y in coll_in if x != y}
+                       - joined):
+        notes.append(f"UNRECONCILED `{a}` and `{b}` are both collection inputs and their "
+                     f"downstream steps never meet, so NOTHING in this workflow is in a position "
+                     f"to compare them -- not their element identifiers, not the sequence names "
+                     f"inside them. A file for the wrong genome, or a panel and an anchor set that "
+                     f"disagree, runs green.")
 
     # -- report -----------------------------------------------------------------------------
     print(f"  {args.workflow.name}: {len(steps)} steps, {len(wf_in)} input(s), "
