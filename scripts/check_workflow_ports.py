@@ -257,6 +257,11 @@ def main() -> int:
                     help="inject known defects into this repo's own workflows and confirm each is "
                          "caught; needs no Galaxy. A green checker nobody has seen go red is not "
                          "evidence of anything.")
+    ap.add_argument("--import-check", action="store_true",
+                    help="POST the workflow to GALAXY_URL, read back the step errors, and delete "
+                         "it. An import is NOT an invocation -- it costs one request, needs no "
+                         "history and runs nothing -- and it is the only thing that catches a "
+                         "workflow the server refuses outright.")
     ap.add_argument("--strict", action="store_true",
                     help="treat a SKIPPED remote half as a failure (use in CI)")
     args = ap.parse_args()
@@ -729,6 +734,75 @@ def main() -> int:
                      f"to compare them -- not their element identifiers, not the sequence names "
                      f"inside them. A file for the wrong genome, or a panel and an anchor set that "
                      f"disagree, runs green.")
+
+    # -- 9b. a doc long enough to be refused, said offline ------------------------------------
+    #    ⚠ THE WALL IS REAL BUT ITS POSITION IS NOT A CONSTANT. Measured on usegalaxy.org: WF-C2's
+    #    port at 4001 characters was refused with a 500 and its first failing prefix was 3866,
+    #    while a synthetic 4200-character doc of ordinary words imported and 6000 characters of one
+    #    repeated word imported -- so the ceiling depends on vocabulary, not bytes. This threshold
+    #    is therefore a WARNING LINE drawn well below the only failure anyone has seen, not a
+    #    limit: `--import-check` is what actually answers the question.
+    if len(str(wf.get("doc") or "")) > 3000:
+        notes.append(f"LONG-DOC  the workflow `doc:` is {len(str(wf.get('doc')))} characters. The "
+                     f"one refusal measured on usegalaxy.org began at 3866, and every static check "
+                     f"passes a file the server will not import. Move the long-form rationale into "
+                     f"YAML comments -- they never reach Galaxy -- and confirm with --import-check.")
+
+    # -- 10. does this server actually ACCEPT the file? --------------------------------------
+    #    ⛔ EVERY STATIC CHECK HERE PASSED A WORKFLOW THAT CANNOT BE IMPORTED. WF-C2's UDT edition
+    #    was committed with a 4001-character `doc:`, and `POST /api/workflows` answered
+    #    `500 Uncaught exception in exposed API method` on usegalaxy.org and vgp.usegalaxy.org --
+    #    six times out of six -- while a local Galaxy 25.0 took the same bytes. Bisected: the first
+    #    failing prefix is 3866 characters, 3865 imports, and stripping the step and port docs does
+    #    not help, so it is the top-level string alone. Not raw length either: 6000 characters of
+    #    ONE repeated word imports and 6000 characters of distinct words does not, so the ceiling
+    #    depends on vocabulary through whatever text index the annotation feeds.
+    #
+    #    The mechanism is not the point. The point is that `run_udt_workflow.py` dies on its FIRST
+    #    API call and nothing in this repository's gates made that call. An import is not an
+    #    invocation -- the module docstring's objection ("an invocation is an expensive way to find
+    #    a typo") does not apply to one POST that schedules nothing -- and it also reports the
+    #    server's own per-step errors, which is a stronger statement than any of the checks above.
+    if args.import_check:
+        if not (url and key):
+            skips.append("IMPORT CHECK SKIPPED — needs GALAXY_URL and GALAXY_API_KEY. NOT a pass.")
+        else:
+            body = json.dumps({"workflow": wf}).encode()
+            req = urllib.request.Request(f"{url}/api/workflows", data=body,
+                                         headers={"x-api-key": key,
+                                                  "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    imported = json.load(r)
+                # ⚠ AND IT ONLY REPORTS WHAT THE API ACTUALLY EXPOSES. `POST /api/workflows`
+                # returns a summary with no `steps`, and `GET /api/workflows/<id>` (with or
+                # without `legacy=true`) returns steps whose `errors` field is never populated --
+                # checked on usegalaxy.org against a workflow with five uninstalled tools, which
+                # reported none. So this does NOT claim to surface per-step problems: it makes the
+                # one statement it can stand behind, which is whether the server takes the file at
+                # all, plus the step arithmetic. That is exactly the check that was missing.
+                got = imported.get("number_of_steps")
+                want = len(steps) + len(wf_in)
+                notes.append(f"IMPORTED  {url} accepted the file "
+                             f"({got} steps stored for {len(steps)} tool step(s) + "
+                             f"{len(wf_in)} input(s))")
+                if got is not None and got != want:
+                    notes.append(f"IMPORT-COUNT stored {got} steps where this file declares "
+                                 f"{want} ({len(steps)} + {len(wf_in)}). Galaxy stores each "
+                                 f"workflow input as a step of its own, so those should agree.")
+                urllib.request.urlopen(
+                    urllib.request.Request(f"{url}/api/workflows/{imported['id']}",
+                                           method="DELETE", headers={"x-api-key": key}),
+                    timeout=60)
+            except urllib.error.HTTPError as e:
+                bad("IMPORT-REFUSED", args.workflow.name,
+                    f"{url} answered HTTP {e.code} to POST /api/workflows: "
+                    f"{e.read()[:160].decode(errors='replace')}. Every static check above passed "
+                    f"this file and the server will not take it, so nothing downstream of the "
+                    f"import can ever run.")
+            except Exception as e:                       # noqa: BLE001 -- reported, never swallowed
+                skips.append(f"IMPORT CHECK FAILED to complete ({type(e).__name__}: {e}). "
+                             f"NOT a pass.")
 
     # -- report -----------------------------------------------------------------------------
     print(f"  {args.workflow.name}: {len(steps)} steps, {len(wf_in)} input(s), "

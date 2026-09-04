@@ -11,60 +11,78 @@ creator:
   - class: Person
     name: Claude Opus 4.8
 release: "0.1"
+# ⛔ THE TOP-LEVEL `doc:` IS SIZE-LIMITED IN PRACTICE, AND THIS FILE FOUND THE LIMIT THE HARD WAY.
+# As first committed its `doc:` was 4001 characters and `POST /api/workflows` answered
+# `500 Uncaught exception in exposed API method` on usegalaxy.org and on vgp.usegalaxy.org --
+# deterministically, six times out of six -- while a local Galaxy 25.0 accepted the same bytes.
+# Bisected: the first failing prefix is 3866 characters; 3865 imports. The same file with a short
+# `doc:` imports cleanly with every step resolving, and stripping the step and port docs does NOT
+# help, so it is the top-level string alone. It is not raw length either -- a synthetic 4200-char
+# doc of ordinary words imports, and 6000 characters of ONE repeated word imports while 6000
+# characters of distinct words does not -- so the ceiling depends on vocabulary, presumably through
+# whatever text index the annotation feeds. Whatever the mechanism, the consequence is flat: a
+# workflow whose doc is too long CANNOT BE IMPORTED on the server this port exists for, and
+# `run_udt_workflow.py` dies on its first API call. `check_workflow_ports.py --import-check` now
+# makes that POST for real.
+#
+# So the long-form rationale lives in comments from here down. Comments are not part of the
+# imported workflow; `doc:` is. Everything a Galaxy USER needs stays in `doc:` -- including the
+# name of every input this edition drops, because the parity check reads that string.
+#
+# WHY THIS IS THE LIFTOFF-ONLY PASS. A User-Defined Tool is a container plus a command, so it can
+# only wrap an image a Galaxy can PULL. tools/toga2/macros.xml records that upstream hillerlab/TOGA2
+# ships only an apptainer/Singularity def -- no published Docker image, no bioconda package, no
+# biocontainer -- and that this project builds its own SIF onto shared storage at
+# /data/containers/toga2-2.0.8.sif. A local .sif path is not something usegalaxy.org can resolve.
+# Until an upstream image exists the TOGA2/CESAR2 rescue cannot run there by ANY means, so the
+# rescue branch is dropped outright rather than wired to a tool that cannot start: nine steps go,
+# and with them three inputs. Both OUTPUTS are unchanged, because brc-phase-c4-merge produces
+# exactly what the classic's merge produces with an empty TOGA directory -- every projected gene
+# tagged source=liftoff, every reference gene absent from the projection reported source=none,
+# intactness=M. That is the pass the classic's own doc describes ("Liftoff-only; TOGA2 off") and is
+# not what the classic actually runs.
+#
+# THE RESCUE HALF IS BUILT AND WAITING. `brc-anchor-grid` is in this repository although this
+# workflow does not use it: it bridges WF-C's {target}.{query} chains to this grid's
+# {anchor}_{query} cells, and it is the only other tool a pass-2 edition needs. That edition adds
+# TEN steps, not nine -- brc-anchor-grid takes anchor AND strain identifier files, so it also needs
+# a second `collection_element_identifiers` over `assemblies`.
+#
+# TWO THRESHOLDS TRAVEL BADLY. `subtelomere_bp: 100000` flags any gene within 100 kb of a sequence
+# END, so a gene escapes rule R7 only on a sequence longer than 200 kb. On an assembly whose N50 is
+# below that, most genes are routed to a CESAR2 fallback this edition does not run,
+# liftoff_clean.gff3 comes out comments-only, and the merge reports every reference gene as
+# source=none, intactness=M with a green invocation -- a real result shape, not a crash. Read
+# `triage_summary` before believing an annotation count. `core_identity_min: 0.95` is likewise a
+# within-species number. The panel this repository targets is chromosome-level.
+#
+# `query_name` IS THE LITERAL STRING `query` FOR EVERY CELL and is written into summary.json (and
+# into a comment line of annotation.gff3). A per-element scalar derived from a map-over identifier
+# is not expressible in gxformat2, so each cell's artifacts are attributable only by their
+# collection element identifier. The classic has the same limitation.
+#
+# `join_identifier: '_'` IS SET EXPLICITLY on all three cross products. The default is already `_`,
+# so nothing about the run changes -- but this project's renderer refuses on Galaxy's "No value
+# found for X. Using default" upgrade messages, because allow_tool_state_corrections downgrades a
+# refusal to a server-side log line no API response exposes. WF-C's UDT edition sets it for the
+# same reason. (run_udt_workflow's fill_step_defaults would also supply it, since __CROSS_PRODUCT_FLAT__
+# is a stock tool it can resolve; it CANNOT resolve a brc-* UDT, which is why the UDT steps below
+# name their optional inputs explicitly instead.)
 doc: >-
-  WF-C2 ported to run on usegalaxy.org. FIVE of the classic workflow's twenty-one steps name tools
-  that are installed on the BRC instance and 404 on .org -- collection_self_pairs,
-  collection_anchor_grid, phase_c2_triage, toga2 and phase_c4_merge -- so the classic imports there
-  and cannot be invoked at all. Four of those five are addressed here with User-Defined Tools
-  (`brc-self-pairs`, `brc-anchor-grid`, `brc-phase-c2-triage`, `brc-phase-c4-merge`).
+  WF-C2 ported to run on usegalaxy.org, as the Liftoff-only pass. Five of the classic workflow's
+  twenty-one steps name tools that are not installed there -- collection_self_pairs,
+  collection_anchor_grid, phase_c2_triage, toga2 and phase_c4_merge -- so the classic imports and
+  cannot be invoked. Four are replaced by User-Defined Tools; TOGA2 is not portable, because it has
+  no published container image, so the TOGA2/CESAR2 rescue branch is dropped rather than wired to a
+  tool that cannot start.
 
-  ⛔ THE FIFTH IS NOT PORTABLE, AND THAT IS WHY THIS EDITION IS THE LIFTOFF-ONLY PASS. A UDT is a
-  container plus a command, so it can only wrap an image a Galaxy can PULL. TOGA2 has none:
-  `tools/toga2/macros.xml` records that upstream hillerlab/TOGA2 ships only an
-  apptainer/Singularity def, with no published Docker image, no bioconda package and no
-  biocontainer, and this repository builds its own SIF and puts it on shared storage at
-  `/data/containers/toga2-2.0.8.sif`. A local .sif path is not something usegalaxy.org can resolve.
-  Until an upstream image exists, the TOGA2/CESAR2 rescue cannot run there by any means, and a port
-  that pretended otherwise would be a workflow that imports and then fails at the one step that
-  matters.
-
-  So this edition runs the pass the classic's own doc describes -- "Liftoff-only; TOGA2 off" -- and
-  drops the rescue branch outright rather than wiring it to a tool that cannot start. NINE steps of
-  the classic's twenty-one are therefore absent, and with them three inputs: `anchor_masked`
-  (TOGA2 --ref_2bit), `anchor_isoforms` (TOGA2 --isoform_file) and `cleaned_chains` (WF-C's chains,
-  TOGA2 --chain_file). Both OUTPUTS are unchanged, because `brc-phase-c4-merge` produces exactly
-  what the classic's merge produces when the TOGA directory is empty: every projected gene tagged
-  `source=liftoff`, and every reference gene absent from the projection reported `source=none,
-  intactness=M`.
-
-  ⚠ THE RESCUE HALF IS BUILT AND WAITING, NOT ABANDONED. `brc-anchor-grid` is included in this
-  repository even though this workflow does not use it: it is the tool that bridges WF-C's
-  `{target}.{query}` chains to this grid's `{anchor}_{query}` cells, and it is the only other piece
-  the pass-2 edition needs. The day TOGA2 has a pullable image, the rescue branch is nine steps of
-  wiring and no new tools.
-
-  ⚠ TWO THRESHOLDS ARE TUNED FOR THE PLASMODIUM PANEL AND TRAVEL BADLY. `subtelomere_bp: 100000`
-  flags any gene within 100 kb of a sequence END, so a gene escapes rule R7 only on a sequence
-  longer than 200 kb: on a scaffold-level assembly that is EVERY gene, all of them are routed to a
-  CESAR2 fallback that this edition does not run, `liftoff_clean.gff3` comes out empty, and the
-  merge reports every reference gene as `source=none, intactness=M` with a green invocation. That
-  is a real result shape, not a crash -- read `triage_summary` before believing an annotation
-  count. The panel this repository targets is chromosome-level, where the threshold is harmless.
-  `core_identity_min: 0.95` is likewise a within-species number.
-
-  ⚠ `query_name` IS THE LITERAL STRING `query` FOR EVERY CELL, and it is written into
-  `summary.json`. A per-element scalar derived from a map-over identifier is not expressible in
-  gxformat2, so each cell's summary claims to describe a strain called "query" and the artifacts
-  are attributable only by their collection element identifier. The classic has the same
-  limitation; it is recorded here because `triage_summary` is now published and a reader will
-  otherwise wonder.
-
-  ⚠ ONE STATE VALUE IS SET HERE THAT THE CLASSIC LEAVES TO A DEFAULT. Every
-  `__CROSS_PRODUCT_FLAT__` step declares `join_identifier: '_'` explicitly. The default is already
-  `_`, so this changes nothing about what runs -- but this project's workflows are invoked through
-  a renderer that refuses on Galaxy's "No value found for X. Using default" upgrade messages,
-  because `allow_tool_state_corrections` downgrades a refusal to a server-side log line that no API
-  response exposes. WF-C's UDT edition sets the same value for the same reason.
+  Nine of the classic's steps are therefore absent, and with them three inputs: `anchor_masked`,
+  `anchor_isoforms` and `cleaned_chains`, all three TOGA2-only. Both of the classic's OUTPUTS are
+  unchanged, because the merge produces exactly what it produces with an empty TOGA directory.
+  Three outputs are ADDED -- `triage_summary`, `triage_table` and Liftoff's `unmapped` -- because
+  without them a run that projected nothing cannot be told from one that projected everything: the
+  merged GFF3 is valid either way, and the classic publishes none of the numbers that would say
+  which happened.
 
 inputs:
   anchor_assemblies:
