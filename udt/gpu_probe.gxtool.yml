@@ -1,0 +1,83 @@
+# A diagnostic UDT, not a tool anybody runs for its output.
+#
+# WHY IT EXISTS. A KegAlign job on usegalaxy.org failed with `Error: No GPU device found!` and an
+# immediate rerun of the same job, same inputs, succeeded with `Using 1 GPU(s)`. The job's own
+# stderr cannot distinguish the two explanations -- a node whose NVIDIA modules were never loaded,
+# or a node where loading them FAILED (a driver/kernel mismatch after an image update, a GPU in a
+# bad state). `job_metrics` is empty for a non-admin account on usegalaxy.org, so the host is not
+# visible either. This asks the node directly, from inside the same container KegAlign runs in.
+#
+# ⚠ IT USES KegAlign's OWN IMAGE, deliberately. A probe in a different container answers a question
+# about a different environment; kegalign-full:0.1.2.9 is what the failing job ran, so what this
+# reports is what that job would have seen.
+#
+# ⚠ WRITE EVERY VARIABLE BARE. `${NAME}` is claimed by Galaxy's templating and a shell_command
+# containing one fails with "Error occurred while building command line for tool", both job streams
+# empty. `$NAME` works. Measured -- see udt/env_probe.gxtool.yml.
+#
+# ⚠ EVERY COMMAND IS GUARDED WITH `|| true`, so the job SUCCEEDS and reports. A probe that exits
+# non-zero when the thing it is probing is absent destroys its own evidence: the interesting run is
+# precisely the one where nvidia-smi is missing or returns an error, and that run must still produce
+# a readable report.
+#
+# ⛔ REACHING A GPU NODE IS NOT AUTOMATIC AND MAY BE REFUSED. usegalaxy.org routes a user-defined
+# tool to jetstream2_gpu_user_defined only when the run requests `gpus > 0`, and its TPV rule
+# `udt_gpu_access` FAILS the job -- "GPU access is not authorized for your account. Please request
+# the 'GPU Access' role." -- for an account without that role. That refusal is itself a result: it
+# says the probe never ran rather than that the node had no GPU.
+class: GalaxyUserTool
+id: brc-gpu-probe
+version: "0.1.0"
+name: GPU node probe (BRC)
+description: Report the NVIDIA driver, devices and host a GPU job actually lands on
+container: quay.io/biocontainers/kegalign-full:0.1.2.9--hdfd78af_0
+shell_command: |
+  {
+    echo "=== control (Galaxy templating is live if this renders a path)"
+    echo "input: $(inputs.input.path)"
+    echo
+    echo "=== host"
+    hostname 2>&1 || true
+    uname -r 2>&1 || true
+    date -u 2>&1 || true
+    echo
+    echo "=== device nodes"
+    ls -l /dev/nvidia* 2>&1 || true
+    echo
+    echo "=== kernel driver"
+    cat /proc/driver/nvidia/version 2>&1 || true
+    echo
+    echo "=== nvidia-smi -L"
+    nvidia-smi -L 2>&1 || true
+    echo "exit: $?"
+    echo
+    echo "=== nvidia-smi"
+    nvidia-smi 2>&1 || true
+    echo
+    echo "=== CUDA-related environment"
+    printenv 2>&1 | grep -i -E 'cuda|nvidia|gpu|slurm' 2>&1 || true
+  } > gpu_probe.txt 2>&1
+inputs:
+  - name: input
+    type: data
+    format: txt
+    label: any small file
+    help: Not read. It is the control -- if its path renders, the tool is registered and templating works.
+outputs:
+  - name: report
+    type: data
+    format: txt
+    from_work_dir: gpu_probe.txt
+    label: GPU node report
+help:
+  format: markdown
+  content: |
+    Prints the host, kernel, `/dev/nvidia*` device nodes, `/proc/driver/nvidia/version`,
+    `nvidia-smi` and the CUDA/SLURM environment, from inside the container KegAlign runs in.
+
+    **Read it against the failure it exists for.** `Error: No GPU device found!` is CUDA reporting
+    ZERO devices. If this probe shows no `/dev/nvidia*` and no `/proc/driver/nvidia/version`, the
+    kernel modules are not loaded on that node. If it shows a driver version but `nvidia-smi` errors,
+    the driver is loaded and unhealthy -- a different fault with a different owner. A driver merely
+    too old for the container's CUDA runtime reports "CUDA driver version is insufficient", not zero
+    devices, so that case is already excluded by the message we got.

@@ -1,8 +1,9 @@
 name: udt-drift
 
-# Keep udt/ in sync with the wrappers under tools/. The check is STANDARD LIBRARY ONLY -- there is
-# no `pip install` step here, unlike pipeline-dataflow.yml which needs pyyaml -- because a generated
-# file going stale must be noticed by CI even when the generator's own toolchain is not present.
+# Keep udt/ in sync with the wrappers under tools/. Both checks are STANDARD LIBRARY ONLY -- there
+# is no `pip install` step here, unlike pipeline-dataflow.yml which needs pyyaml -- because a
+# generated file going stale must be noticed by CI even when the generator's own toolchain is not
+# present. Regenerating is a maintainer step; noticing that one is owed is CI's.
 on:
   push:
     branches: [main]
@@ -25,12 +26,23 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Regenerate every UDT and compare against the committed copy. The same command also reports
-      # ORPHANS -- a file in udt/ that build() no longer produces -- which a generated-side
-      # comparison cannot see on its own.
+      # Generated-side: regenerate every UDT and compare against the committed copy. The same
+      # command reports ORPHANS -- a file in udt/ that build() no longer produces -- which a
+      # generated-side comparison cannot see on its own.
       - name: UDTs match their generator
         run: python3 scripts/build_softmask_udts.py --check
 
+      # Source-side: for CONVERTED UDTs, re-hash the source wrapper AND its macros.xml against the
+      # provenance stamp. The macros hash is the load-bearing half -- 36 of the 50 wrappers here
+      # declare their requirements only through <expand macro="requirements"/>, so a version bump
+      # changes the container a UDT pins while leaving the tool XML byte-identical.
+      - name: Converted UDTs match their source wrappers
+        run: python3 scripts/check_udt_provenance.py
+
+      # The WF-A bookkeeping UDTs inline their Python from tools/ verbatim; this is what stops the
+      # inlined copy and the wrapper's own helper from drifting apart.
+      - name: Inventory UDTs match their helpers
+        run: python3 scripts/build_inventory_udts.py --check
   # The generator checks above ask "does udt/ match its sources?". This one asks a different
   # question -- "are these tools CORRECT?" -- against the udt-authoring skill's schema, templating
   # and common-mistakes references, plus the silent-success cases found by attacking the tools with

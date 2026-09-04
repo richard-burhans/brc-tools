@@ -1,0 +1,377 @@
+class: GalaxyWorkflow
+label: WF-C align_chain (UDT edition, usegalaxy.org)
+license: MIT
+creator:
+  - class: Person
+    identifier: https://orcid.org/0000-0002-5987-8032
+    name: Anton Nekrutenko
+  - class: Person
+    identifier: https://orcid.org/0009-0006-5949-0958
+    name: Richard Burhans
+  - class: Person
+    name: Claude Opus 4.8
+release: '0.3'
+doc: >-
+  The usegalaxy.org-runnable form of `align_chain.gxwf.yml`: the SAME graph, with one step changed.
+  Eight of its nine tools are ToolShed tools usegalaxy.org already installs, so this edition differs
+  from the classic file by exactly the two `chainStitchId` steps, which become the User-Defined Tool
+  `brc-chain-stitch-id` (generated from `tools/chainStitchId/chainStitchId.xml`, held at
+  `udt/chain_stitch_id.gxtool.yml`). Parity is mechanical rather than asserted: the two files have
+  identical `inputs`, identical `outputs`, the same step labels in the same order, and exactly two
+  steps whose content differs -- those two `tool_id`s.
+
+  ⚠ IT PINS TOOLSHED REVISIONS, WHERE THE WF-B UDT EDITION DELIBERATELY DOES NOT, and the
+  difference is measured rather than stylistic. All eight ids here were resolved against
+  usegalaxy.org's live panel -- kegalign 0.1.2.9+galaxy1, batched_lastz 1.04.22+galaxy1,
+  ucsc_axtchain 482+galaxy2, and ucsc_chainsort / ucsc_chainprenet / ucsc_chainnet /
+  ucsc_netchainsubset / ucsc_chainswap at 482+galaxy0 -- and every one resolves, so pinning costs
+  nothing and buys reproducibility. WF-B's tools did not resolve, which is why that file keeps plain
+  ids and renders them at run time.
+
+  ⛔ A UDT STEP IMPORTS CLEANLY AND THEN REFUSES AT INVOKE unless the account has that UDT
+  registered, the same constraint `workflows/softmask/softmask_udt.gxwf.yml` records. This file is
+  the portable definition; running it means registering `brc-chain-stitch-id` on the account and
+  invoking the rendered copy.
+
+  ⚠ KegAlign HERE IS 0.1.2.9, AND THAT IS WHY THIS EDITION CAN RUN TODAY. Its container
+  (kegalign-full:0.1.2.9, published 2026-03-28) sits inside the CVMFS revision the job nodes still
+  mount: singularity.galaxyproject.org has been frozen on a stuck publication lock since 2026-08-19,
+  so an image built after that date -- kegalign-full:0.2.1.13 among them -- never reaches a job node
+  and Galaxy substitutes a default image without saying so. `ucsc-chainstitchid:482--h0b57e2e_0`
+  (2025-06-29) is inside the frozen revision too. Verify a job's container before reading anything
+  it says about your inputs.
+
+  What the classic file says about the graph itself, unchanged:
+
+  Phase C, chaining half (split out of the former combined align_chain_project;
+  the gene-projection half is now WF-C2 project_annotations). Whole-genome
+  alignment -> reciprocal-best UCSC chains, as a SINGLE map-over with native
+  Galaxy collection operations (no custom helpers). CROSS_PRODUCT_FLAT enumerates
+  ordered strain pairs as two aligned target/query lists (the paired-slot ->
+  two-input binding gxformat2 could not express), FILTER_FROM_FILE drops
+  self-pairs, the cleaned + rbest UCSC chain pipeline maps over them, and
+  RELABEL_FROM_FILE rewrites A_B->A.B for Phase E. Proven bit-identical to
+  per-pair driving on the Pv4 test panel.
+inputs:
+  masked_fastas:
+    type: collection
+    collection_type: list
+    doc: softmasked per-strain FASTAs (WF-B), id=strain
+    position: {top: 142, left: 17}
+  sizes:
+    type: collection
+    collection_type: list
+    doc: per-strain .sizes (WF-A), id=strain
+    position: {top: 537, left: 0}
+  self_pairs:
+    type: data
+    doc: txt of self-pair ids (X_X) to exclude (WF-A)
+    position: {top: 262, left: 4}
+  relabel_map:
+    type: data
+    doc: tabular A_B<TAB>A.B id map for Phase E (WF-A)
+    position: {top: 391, left: 5}
+steps:
+  xprod_fa:
+    tool_id: __CROSS_PRODUCT_FLAT__
+    in:
+      input_a: masked_fastas
+      input_b: masked_fastas
+    state:
+      # ⚠ NAMED, THOUGH IT IS THE DEFAULT. Galaxy answers an invocation whose step leaves this
+      # unset with "No value found for 'Join collection identifiers using'. Using default: '_'",
+      # and a run that refuses on an upgrade message -- as this project's invoke() deliberately
+      # does -- stops there. Measured on usegalaxy.org, 2026-09-01, on this very workflow.
+      # The value also fixes the pair id format the `self_pairs` and `relabel_map` files must
+      # match: A_B, joined with an underscore.
+      join_identifier: "_"
+    out:
+      output_a: {}
+      output_b: {}
+    position: {top: 320, left: 251}
+  xprod_sz:
+    tool_id: __CROSS_PRODUCT_FLAT__
+    in:
+      input_a: sizes
+      input_b: sizes
+    state:
+      # ⚠ NAMED, THOUGH IT IS THE DEFAULT. Galaxy answers an invocation whose step leaves this
+      # unset with "No value found for 'Join collection identifiers using'. Using default: '_'",
+      # and a run that refuses on an upgrade message -- as this project's invoke() deliberately
+      # does -- stops there. Measured on usegalaxy.org, 2026-09-01, on this very workflow.
+      # The value also fixes the pair id format the `self_pairs` and `relabel_map` files must
+      # match: A_B, joined with an underscore.
+      join_identifier: "_"
+    out:
+      output_a: {}
+      output_b: {}
+    position: {top: 320, left: 1651}
+  tgt_fa:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: xprod_fa/output_a
+      how|filter_source: self_pairs
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 90, left: 601}
+  qry_fa:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: xprod_fa/output_b
+      how|filter_source: self_pairs
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 340, left: 601}
+  tgt_sz:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: xprod_sz/output_a
+      how|filter_source: self_pairs
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 320, left: 2001}
+  qry_sz:
+    tool_id: __FILTER_FROM_FILE__
+    in:
+      input: xprod_sz/output_b
+      how|filter_source: self_pairs
+    state:
+      how:
+        how_filter: remove_if_present
+    out:
+      output_filtered: {}
+    position: {top: 570, left: 2001}
+  kegalign:
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/kegalign/kegalign/0.1.2.9+galaxy1
+    in:
+      target: tgt_fa/output_filtered
+      query: qry_fa/output_filtered
+    state:
+      # ⛔ THE DEFAULTS ARE NAMED TOO, NOT ONLY THE CHOICES. Galaxy answers an invocation that
+      # leaves a parameter unset with "No value found for ... Using default: ...", and this
+      # project's invoke() refuses on upgrade messages rather than silencing them with
+      # allow_tool_state_corrections -- measured here, fourteen messages from this one step. Same
+      # fix and same reasoning as `5f3386a` for WF-B.
+      #
+      # ⚠ EVERY VALUE BELOW MARKED (default) WAS READ FROM THE TOOL, not typed from its help:
+      # GET /api/tools/<id>?io_details=true on usegalaxy.org, revision 0.1.2.9+galaxy1. The
+      # unmarked ones are this workflow's deliberate choices and were here already.
+      #
+      # ⚠ AND THIS IS ALSO REPRODUCIBILITY, NOT PAPERWORK. seed, step, xdrop and the scoring set
+      # decide what the alignment finds; a pinned tool revision beside an unpinned state promises
+      # less than it appears to, because the defaults can move under a revision bump.
+      sequence_options:
+        strand_selector: both
+      seeding_options:
+        seed:
+          seed_selector: '12of19'          # (default)
+        step: '1'                          # (default)
+        notransition: false                # (default)
+      scoring_options:
+        # ⚠ AN OPTIONAL DATA INPUT HAS NO VALUE TO NAME, which is why this one is `null` rather
+        # than a number: Galaxy reports it as "No value found for 'Scoring file in LASTZ format'.
+        # Using default: <RuntimeValue>". LASTZ's built-in HOXD70 matrix is what runs when it is
+        # absent, and that is the intent here.
+        scoring: null
+        ambiguous_selector: 'x'            # (default)
+        ambiguous_params:
+          set_ambiguous_params_selector: 'false'   # (default)
+      ungapped_extension_options:
+        hspthresh: 5000
+        xdrop: '910'                       # (default)
+        noentropy: false                   # (default)
+      gapped_extension_options:
+        gappedthresh: 6000
+        ydrop: 15000
+        notrivial: false                   # (default)
+      interpolation_options:
+        inner: 2000
+      system_options:
+        wga_chunk_size: '250000'           # (default)
+        lastz_interval_size: '10000000'    # (default)
+        seq_block_size: '400000000'        # (default)
+        num_gpu: '-1'                      # (default)
+        debug: false                       # (default)
+      output_options:
+        format:
+          format_selector: axt
+          axt_type: axt
+    out:
+      kegalign_output: {}
+    position: {top: 140, left: 901}
+  batched_lastz:
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/batched_lastz/batched_lastz/1.04.22+galaxy1
+    in:
+      input: kegalign/kegalign_output
+    # batched_lastz declares its output format as 'auto' (sniffed at runtime);
+    # axtchain in_aln only accepts axt/psl, so the editor shows the connection as
+    # an unverifiable (orange) line. kegalign is configured format=axt, so pin the
+    # datatype to axt -> the editor draws a solid, valid connection.
+    out:
+      output: {}
+    position: {top: 140, left: 1201}
+    post_job_actions:
+      ChangeDatatypeActionoutput:
+        action_arguments:
+          newtype: axt
+        action_type: ChangeDatatypeAction
+        output_name: output
+  axtchain:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_axtchain/ucsc_axtchain/482+galaxy2
+    in:
+      in_aln: batched_lastz/output
+      in_target: tgt_fa/output_filtered
+      in_query: qry_fa/output_filtered
+    state:
+      linear_gap_options:
+        linear_gap: loose
+    out:
+      out: {}
+    position: {top: 80, left: 1651}
+  chainsort_clean:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainsort/ucsc_chainsort/482+galaxy0
+    in:
+      in_chain: axtchain/out
+    out:
+      out: {}
+    position: {top: 0, left: 2001}
+  chainprenet:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainprenet/ucsc_chainprenet/482+galaxy0
+    in:
+      in_chain: chainsort_clean/out
+      target_reference_index_source|in_tar_ref_index: tgt_sz/output_filtered
+      query_reference_index_source|in_que_ref_index: qry_sz/output_filtered
+    state:
+      target_reference_index_source:
+        target_reference_index_source_selector: history
+      query_reference_index_source:
+        query_reference_index_source_selector: history
+    out:
+      out: {}
+    position: {top: 0, left: 2351}
+  chainnet:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainnet/ucsc_chainnet/482+galaxy0
+    in:
+      in_chain: chainprenet/out
+      target_reference_index_source|in_tar_ref_index: tgt_sz/output_filtered
+      query_reference_index_source|in_que_ref_index: qry_sz/output_filtered
+    state:
+      target_reference_index_source:
+        target_reference_index_source_selector: history
+      query_reference_index_source:
+        query_reference_index_source_selector: history
+    out:
+      targetNet: {}
+    position: {top: 0, left: 2751}
+  netchainsubset:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_netchainsubset/ucsc_netchainsubset/482+galaxy0
+    in:
+      in_net: chainnet/targetNet
+      in_chain: chainprenet/out
+    out:
+      out: {}
+    position: {top: 0, left: 3051}
+  chainstitchid_clean:
+    tool_id: brc-chain-stitch-id
+    in:
+      input: netchainsubset/out
+    out:
+      output: {}
+    position: {top: 150, left: 3351}
+  rb_swap1:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainswap/ucsc_chainswap/482+galaxy0
+    in:
+      in_chain: chainstitchid_clean/output
+    out:
+      out: {}
+    position: {top: 150, left: 3651}
+  rb_sort1:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainsort/ucsc_chainsort/482+galaxy0
+    in:
+      in_chain: rb_swap1/out
+    out:
+      out: {}
+    position: {top: 170, left: 3951}
+  rb_net:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainnet/ucsc_chainnet/482+galaxy0
+    in:
+      in_chain: rb_sort1/out
+      target_reference_index_source|in_tar_ref_index: qry_sz/output_filtered
+      query_reference_index_source|in_que_ref_index: tgt_sz/output_filtered
+    state:
+      target_reference_index_source:
+        target_reference_index_source_selector: history
+      query_reference_index_source:
+        query_reference_index_source_selector: history
+    out:
+      targetNet: {}
+    position: {top: 280, left: 4251}
+  rb_subset:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_netchainsubset/ucsc_netchainsubset/482+galaxy0
+    in:
+      in_net: rb_net/targetNet
+      in_chain: rb_sort1/out
+    out:
+      out: {}
+    position: {top: 280, left: 4551}
+  rb_stitch:
+    tool_id: brc-chain-stitch-id
+    in:
+      input: rb_subset/out
+    out:
+      output: {}
+    position: {top: 280, left: 4851}
+  rb_swap2:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainswap/ucsc_chainswap/482+galaxy0
+    in:
+      in_chain: rb_stitch/output
+    out:
+      out: {}
+    position: {top: 280, left: 5151}
+  rb_sort2:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/ucsc_chainsort/ucsc_chainsort/482+galaxy0
+    in:
+      in_chain: rb_swap2/out
+    out:
+      out: {}
+    position: {top: 280, left: 5451}
+  relabel_cleaned:
+    tool_id: __RELABEL_FROM_FILE__
+    in:
+      input: chainstitchid_clean/output
+      how|labels: relabel_map
+    state:
+      how:
+        how_select: tabular
+        strict: false
+    out:
+      output: {}
+    position: {top: 370, left: 3651}
+  relabel_rbest:
+    tool_id: __RELABEL_FROM_FILE__
+    in:
+      input: rb_sort2/out
+      how|labels: relabel_map
+    state:
+      how:
+        how_select: tabular
+        strict: false
+    out:
+      output: {}
+    position: {top: 280, left: 5751}
+outputs:
+  cleaned_chains:
+    outputSource: relabel_cleaned/output
+  rbest_chains:
+    outputSource: relabel_rbest/output
+  pairwise_axt:
+    outputSource: batched_lastz/output

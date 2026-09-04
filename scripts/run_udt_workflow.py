@@ -69,6 +69,73 @@ def needed_udts(workflow: pathlib.Path) -> list[str]:
     return seen
 
 
+def _fill(tool_inputs, state, connections, prefix=""):
+    """Insert each unset parameter's own default into `state`; return the paths filled."""
+    filled = []
+    for i in tool_inputs:
+        name, kind = i["name"], i.get("type")
+        path = f"{prefix}{name}"
+        if kind == "section":
+            filled += _fill(i.get("inputs", []), state.setdefault(name, {}), connections, f"{path}|")
+        elif kind == "conditional":
+            test = i.get("test_param") or {}
+            sub = state.setdefault(name, {})
+            if test.get("name") and test["name"] not in sub:
+                sub[test["name"]] = test.get("value")
+                filled.append(f"{path}|{test['name']}={test.get('value')!r}")
+            chosen = sub.get(test.get("name"))
+            for case in i.get("cases", []):
+                if case.get("value") == chosen:
+                    filled += _fill(case.get("inputs", []), sub, connections, f"{path}|")
+        elif kind == "repeat":
+            continue                      # a repeat has no default instance to invent
+        elif kind in ("data", "data_collection"):
+            # ⛔ ONLY UNCONNECTED ONES. A connected input carries its edge in input_connections and
+            # its state entry is Galaxy's business; writing null over it would cut the wire.
+            if name not in state and path not in connections:
+                state[name] = None
+                filled.append(f"{path}=null (optional, unconnected)")
+        elif name not in state and not name.startswith("__"):
+            state[name] = i.get("value")
+            filled.append(f"{path}={i.get('value')!r}")
+    return filled
+
+
+def fill_step_defaults(gi: GalaxyInstance, native: dict) -> None:
+    """Write every unset parameter's own default into each step's tool_state, and SAY SO.
+
+    ⛔ WHY THIS EXISTS RATHER THAN A LONGER WORKFLOW FILE. Galaxy answers an invocation whose step
+    leaves a parameter unset with "No value found for X. Using default: Y", and this project's
+    invoke() refuses on upgrade messages rather than silencing them with
+    allow_tool_state_corrections. Naming every parameter of every step in the workflow would satisfy
+    that -- and for KegAlign, whose seed, step, xdrop and scoring set DECIDE WHAT THE ALIGNMENT
+    FINDS, the workflow does exactly that. But the nine UCSC chain tools carry dozens of mechanical
+    knobs that no reader of the file wants to see, and burying five scientific choices in eighty
+    lines of inherited defaults makes the file worse, not more reproducible.
+
+    ⚠ SO THE DEFAULTS ARE FILLED HERE AND RECORDED THERE. Every value comes from the tool's own API
+    on the instance being run, each fill is printed, and the resolved `.ga` written beside the run
+    is the artifact that says what actually executed. Nothing is silenced: a parameter this cannot
+    resolve still reaches invoke() as a refusal.
+    """
+    for step in native["steps"].values():
+        tool_id = step.get("tool_id")
+        if not tool_id or not step.get("tool_state"):
+            continue
+        try:
+            spec = gi.tools.show_tool(tool_id, io_details=True)
+        except Exception as exc:                       # a UDT is not in /api/tools at all
+            print(f"    {tool_id}: defaults not fetched ({str(exc)[:40]})")
+            continue
+        state = json.loads(step["tool_state"])
+        connections = set(step.get("input_connections") or {})
+        filled = _fill(spec.get("inputs", []), state, connections)
+        if filled:
+            step["tool_state"] = json.dumps(state)
+            label = step.get("label") or tool_id.split("/")[-2] if "/" in tool_id else tool_id
+            print(f"    defaults filled for {label}: {', '.join(filled)}")
+
+
 def render_and_import(gi: GalaxyInstance, workflow: pathlib.Path, uuids: dict[str, str],
                       work: pathlib.Path, name: str) -> str:
     """Portable gxformat2 -> native -> identities resolved -> re-imported. Returns workflow id."""
@@ -93,6 +160,8 @@ def render_and_import(gi: GalaxyInstance, workflow: pathlib.Path, uuids: dict[st
                 notes.append(f"    {tool_id:44} (resolves as written)")
         resolved += 1
     print("\n".join(notes))
+
+    fill_step_defaults(gi, native)
 
     native["name"] = name
     work.mkdir(parents=True, exist_ok=True)

@@ -161,6 +161,15 @@ HAND_WRITTEN_UDTS = frozenset({
     # platform claims in these tools' help text rest on a measurement. Nothing generates it because
     # nothing in tools/ corresponds to it.
     "env_probe.gxtool.yml",
+    # A GPU node diagnostic, not part of any workflow: it reports the driver, device nodes and host
+    # a GPU job lands on, from inside KegAlign's own image. Written after a KegAlign job failed with
+    # "No GPU device found!" and its immediate rerun succeeded -- a difference the job's own stderr
+    # cannot explain and, without admin-visible job metrics, nothing else here can either.
+    "gpu_probe.gxtool.yml",
+    # Asks what a `data_collection` input renders to inside a UDT job, and whether element
+    # identifiers survive into it. That answer gates the sourmash, masking_table, multiz_fold and
+    # phase_e_consensus ports, all of which iterate a collection reading identifiers.
+    "collection_probe.gxtool.yml",
 })
 
 #: Command fragments this file hardcodes, and the wrapper each is copied from.
