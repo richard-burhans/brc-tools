@@ -23,7 +23,7 @@ id: brc-tantan-bed3
 version: "0.1.0"
 name: tantan -> BED3 (BRC UDT)
 description: tantan gentle low-complexity intervals, stage 1 of 2
-container: quay.io/biocontainers/tantan:51--h4ac6f70_0
+container: quay.io/biocontainers/tantan:51--h5ca1c30_1
 shell_command: |
   cat > lc2bed.awk <<'BRC_AWK'
   # tantan soft-masked FASTA (low-complexity lower-cased) -> BED3 (chrom, start, end).

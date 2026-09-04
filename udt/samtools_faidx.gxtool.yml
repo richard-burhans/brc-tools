@@ -8,15 +8,40 @@ description: Index a FASTA (.fai) and emit the chrom/length table bedtools wants
 container: quay.io/biocontainers/samtools:1.24--h9dcdb79_1
 shell_command: |
   set -o pipefail
-  cp '$(inputs.input.path)' seq.fa
-  samtools faidx seq.fa
-  cut -f1,2 seq.fa.fai > chrom.sizes
+  { if gzip -t '$(inputs.input.path)' 2>/dev/null; then gzip -cd '$(inputs.input.path)'; else cat '$(inputs.input.path)'; fi; } \
+    > seq.fa &&
+  samtools faidx seq.fa &&
+  cut -f1,2 seq.fa.fai > chrom.sizes &&
+  awk '/\r/ && substr($0, length($0), 1) != "\r" {
+      print "⛔ brc-samtools-faidx: a carriage return appears MID-LINE, so this FASTA has lone-CR (classic Mac) or mixed line endings." > "/dev/stderr"
+      print "   samtools splits records on a newline exactly as this awk does, so a > that follows a bare CR is invisible to BOTH: the record is swallowed into its predecessor, whose length then covers it, and the record-count guard below sees MATCHING counts and passes." > "/dev/stderr"
+      print "   Measured: a 3-record FASTA came out as a 2-row index with the second contig reported 18 bp long when it is 8, and the third absent entirely, exit 0." > "/dev/stderr"
+      print "   chrom.sizes is the bedtools genome file WF-C runs on -- an over-long contig lets intervals past its real end survive, and a missing one makes every interval on it vanish. REFUSING; convert the line endings first." > "/dev/stderr"
+      exit 1 }' seq.fa &&
+  awk '/^>/ {n++} END {print n+0}' seq.fa > n_seq.txt &&
+  awk 'END {print NR+0}' seq.fa.fai > n_fai.txt &&
+  awk 'NR == FNR {a = $1; next} {b = $1} END {
+      if (a+0 == b+0) exit 0
+      print "⛔ brc-samtools-faidx: the FASTA holds " a " record(s) and the index " b " row(s)." > "/dev/stderr"
+      print "   samtools drops a record in two cases and NEITHER of them changes the exit code:" > "/dev/stderr"
+      print "   a DUPLICATE sequence name, which is warning-level only ([W::fai_insert_index]" > "/dev/stderr"
+      print "   Ignoring duplicate sequence), and a ZERO-LENGTH record, which says nothing at all." > "/dev/stderr"
+      print "   chrom.sizes is the bedtools genome file WF-C runs on, and a contig missing from a" > "/dev/stderr"
+      print "   genome file makes every interval on it vanish silently. REFUSING rather than" > "/dev/stderr"
+      print "   publishing a short index that looks complete." > "/dev/stderr"
+      exit 1 }' n_seq.txt n_fai.txt
 inputs:
   - name: input
     type: data
-    format: fasta
+    format: fasta,fasta.gz
     label: FASTA to index
-    help: plain FASTA. samtools faidx accepts bgzip but NOT ordinary gzip.
+    help: >-
+      Plain or gzipped. ⛔ samtools faidx CANNOT index ordinary gzip -- it accepts bgzip and
+      nothing else -- so a .gz input is decompressed first rather than passed through. Handed one
+      directly it fails with "Cannot index files compressed with gzip, please use bgzip", once per
+      element, which is what WF-A did on an NCBI assembly collection: NCBI ships .gz, and unlike
+      WF-B (where this step reads the already-decompressed output of brc-fasta-uppercase) WF-A
+      indexes the raw assemblies.
 outputs:
   - name: output
     type: data
