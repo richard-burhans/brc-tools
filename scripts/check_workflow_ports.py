@@ -465,9 +465,17 @@ def main() -> int:
     #    NEWEST at import time. That is a live hazard for any step carrying a hand-written
     #    `state:` block, because a different wrapper revision can rename a parameter -- and the
     #    state blocks in this repository exist precisely to avoid allow_tool_state_corrections.
+    #    ⚠ A BUILT-IN HAS NO VERSION TO PIN, so calling it unpinned is advice nobody can take.
+    #    `cat1` and the collection-operation tools -- `__FILTER_FROM_FILE__`,
+    #    `__RELABEL_FROM_FILE__`, `__CROSS_PRODUCT_FLAT__` and the rest of the `__NAME__` family --
+    #    ship inside Galaxy itself: there is no owner/repo path, no ToolShed revision, and their
+    #    version tracks the server release. WF-C's UDT edition is eight of them, and reporting all
+    #    eight as UNPINNED next to a `doc:` that argues pinning costs nothing reads as a
+    #    contradiction in the workflow rather than a gap in the checker, which is what it is.
     unpinned = [(n, s["tool_id"]) for n, s in steps.items()
                 if s.get("tool_id") not in udt and "/" not in s.get("tool_id", "")
-                and s.get("tool_id") != "cat1"]          # cat1 is built-in; it has no other form
+                and s.get("tool_id") != "cat1"
+                and not re.fullmatch(r"__[A-Z0-9_]+__", s.get("tool_id", ""))]
 
     # -- 7. remote parameters AND remote OUTPUT NAMES ---------------------------------------
     #    ⚠ THE OUTPUT HALF IS NOT OPTIONAL. An earlier version checked output names only for the
