@@ -1,0 +1,17 @@
+categories:
+- Sequence Analysis
+- Variant Analysis
+description: Cyclospora PART haplotype caller - per-PART amplicon haplotypes from a marker-aligned BAM
+long_description: |
+  Stage 3a of the Cyclospora cayetanensis amplicon typing pipeline. Cuts each
+  marker amplicon into its PART intervals, collapses the aligned subsequence of
+  every fully spanning read, applies the pre-registered calling gates (50
+  spanning reads to call a PART; 5% frequency and 10 reads to keep a haplotype)
+  and names each surviving haplotype by exact match against the known-haplotype
+  FASTA, or as <PART>_NOV_<md5[:6]> when it is novel. No assembly is involved.
+  The CDC marker set, PART BED and 78 known haplotypes are bundled.
+name: cyclospora_part_caller
+owner: nekrut
+homepage_url: https://github.com/spond/pyeuk
+remote_repository_url: https://github.com/nekrut/brc-tools/tree/main/tools/cyclospora/cyclospora_part_caller
+type: unrestricted

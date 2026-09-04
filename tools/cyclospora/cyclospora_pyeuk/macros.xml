@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<macros>
+    <!--
+        PyEuk's own package __version__ at the pinned commit. The brief called
+        this release "v2.1.7"; the code says 2.1.0. The COMMIT is what matters
+        and it is the one requested: d8e45a81 is the last commit before
+        f6e301d "feat(distance_engine): Implement SNP-Weighted KING-wIBS",
+        i.e. the last binary KING-wIBS engine. Do NOT move the pin to v3.x;
+        the SNP-weighted engine regresses on the CDC sheets (AUC drops,
+        4 of 6 sheets collapse to k=1, nulls fall from 12/12 to 10/12).
+    -->
+    <token name="@TOOL_VERSION@">2.1.0</token>
+    <token name="@VERSION_SUFFIX@">0</token>
+    <token name="@PROFILE@">26.0</token>
+    <token name="@PYEUK_COMMIT@">d8e45a81820f28b6b3abf326e62870c346cd2890</token>
+
+    <!--
+        CONTAINER-ONLY, deliberately. PyEuk is not on bioconda and has no
+        biocontainer, and the whole Cyclospora arm shares ONE image so that no
+        tool in it can resolve to a merged mulled-v1-<hash> conda environment;
+        that failure mode dies with exit 1 and a completely empty stderr.
+        Built from tools/cyclospora/container/cyclospora-typing.def.
+    -->
+    <token name="@CYCLOSPORA_IMAGE@">/data/containers/cyclospora-typing-1.0.0.sif</token>
+
+    <xml name="requirements">
+        <requirements>
+            <container type="singularity">@CYCLOSPORA_IMAGE@</container>
+        </requirements>
+    </xml>
+
+    <!--
+        Galaxy runs the image contained, with a clean environment and with tmp
+        left unmounted (contain ; cleanenv ; no-mount tmp), so /tmp is not
+        writable on a compute node and $TMPDIR arrives empty. Every
+        scratch-writing library has to be pointed back into the job directory,
+        and this has to happen in the command block: a container's
+        %environment section is applied after the env flags Galaxy passes and
+        would overwrite anything set there.
+    -->
+    <token name="@SCRATCH@"><![CDATA[
+mkdir -p wrk &&
+export TMPDIR="\$(pwd)/wrk" &&
+export HOME="\$(pwd)/wrk" &&
+export NUMBA_CACHE_DIR="\$(pwd)/wrk" &&
+export MPLCONFIGDIR="\$(pwd)/wrk" &&
+export NUMBA_NUM_THREADS=\${GALAXY_SLOTS:-1} &&
+    ]]></token>
+
+    <xml name="citations">
+        <citations>
+            <!-- Barratt et al., the eukaryotyping framework PyEuk implements. -->
+            <citation type="doi">10.1017/S0031182019000581</citation>
+            <!-- Nascimento et al., CDC Cyclospora MLST genotyping scheme. -->
+            <citation type="doi">10.1016/j.meegid.2019.103894</citation>
+            <citation type="bibtex"><![CDATA[
+@misc{pyeuk_pinned,
+  author = {Pond, Sergei L. Kosakovsky and contributors},
+  title  = {PyEuk: modernized CDC Cyclospora cayetanensis eukaryotyping engine},
+  note   = {https://github.com/spond/pyeuk, pinned to commit
+            d8e45a81820f28b6b3abf326e62870c346cd2890 (binary KING-wIBS)},
+  year   = {2026}
+}
+            ]]></citation>
+        </citations>
+    </xml>
+</macros>

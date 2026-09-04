@@ -31,8 +31,17 @@ inputs:
     position: {top: 380, left: 300}
   busco_lineage:
     type: string
-    default: apicomplexa_odb10
-    doc: BUSCO lineage dataset (species-configurable, e.g. <clade>_odb10).
+    default: apicomplexa_odb12
+    doc: >-
+      BUSCO lineage dataset, species-configurable. ⛔ THE SUFFIX MUST MATCH THE CACHED DATABASE
+      THE `busco` STEP RESOLVES AGAINST, and `_odb10` names are NOT valid under the one the tool
+      now defaults to. usegalaxy.org 2026-09-03 offers all-odb12 (495 lineages, the tool default),
+      all-odb10 (193) and v5 (67); `apicomplexa_odb10` appears only in the latter two, so the
+      previous default could not be selected at all. ⚠ Names also changed between releases --
+      odb10's `eudicots` is odb12's `eudicotyledons` -- so this is not a matter of editing the
+      digits. For a non-Plasmodium panel pick the narrowest lineage that contains the organism:
+      odb12 reaches order level for many clades (e.g. `rosales_odb12` for Cannabaceae) where
+      odb10 stopped at `eudicots_odb10`.
     position: {top: 500, left: 300}
   anchor_gene_gff3s:
     type: collection
@@ -121,13 +130,26 @@ steps:
       input: proteomes
       lineage|lineage_dataset: busco_lineage
     state:
-      # Real IUC busco schema (5.8.0+galaxy2): mode is the test_param of the
-      # `busco_mode` conditional, NOT a top-level `mode` key. lineage_dataset is
-      # a SELECT populated by the busco lineage data manager; on this server it
-      # has ZERO options (verified 2026-06-07: busco_database.loc empty) and the
-      # data_manager_fetch_busco tool is NOT installed, so select_lineage cannot
-      # run until that DM is installed and fetches <lineage>_odb10. Also: inputs
-      # must be proteomes (-m prot); test_data ships only genomes.
+      # Real IUC busco schema: mode is the test_param of the `busco_mode`
+      # conditional, NOT a top-level `mode` key. Inputs must be proteomes
+      # (-m prot); test_data ships only genomes.
+      #
+      # ⚠ THE LINEAGE SITUATION HAS CHANGED SINCE THIS COMMENT WAS WRITTEN. It
+      # recorded (2026-06-07) that busco_database.loc was EMPTY, the fetch data
+      # manager was absent, and select_lineage therefore could not run. On
+      # usegalaxy.org as of 2026-09-03 that is no longer so: three cached
+      # databases are installed (all-odb12 2026-03-20, all-odb10 2026-03-19, v5)
+      # carrying 755 lineage options between them, and select_lineage works.
+      #
+      # ⛔ `cached_db` IS DELIBERATELY LEFT UNSET, AND THAT IS A CHOICE WORTH
+      # SEEING. It is a top-level tool parameter naming WHICH cached database the
+      # lineage select is filtered against, and it currently defaults to
+      # all-odb12-2026-03-20-145944. Leaving it unset keeps this workflow
+      # portable to instances holding a different set, but it also means the
+      # lineage the run actually resolves depends on the server's default on the
+      # day -- and a `busco_lineage` valid on one instance is unselectable on
+      # another. Pinning it would trade that away for reproducibility; see the
+      # PR discussion.
       busco_mode:
         mode: prot
       lineage:

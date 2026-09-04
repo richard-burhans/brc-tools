@@ -31,8 +31,7 @@ set -o pipefail &&
 | awk '/^>/{print;next}{print toupper(\$0)}' > in.fa &&
 FAtoGDB in.fa gdb || true ;
 FasTAN -m -p -T\${GALAXY_SLOTS:-4} gdb &&
-ANOtoBED gdb.1ano
-| grep -v '^#'
+ONEview gdb.1ano
 | awk -f '$__tool_directory__/ano2bed6.awk'
 | LC_ALL=C sort -k1,1 -k2,2n > '$output'
     ]]></command>

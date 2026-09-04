@@ -17,8 +17,8 @@ description: Convert a FASTA to a FastGA GDB, stage 1 of 3 for the fastan tandem
 container: quay.io/biocontainers/fastga:1.5.20260729--h118bc1c_0
 shell_command: |
   set -o pipefail
-  cp '$(inputs.input.path)' up.fa
-  FAtoGDB up.fa gdb
+  cp '$(inputs.input.path)' up.fa &&
+  FAtoGDB up.fa gdb &&
   tar cf gdb.tar gdb.1gdb .gdb.bps
 inputs:
   - name: input
