@@ -113,10 +113,23 @@ def assert_no_nested_substitution(rendered: dict[str, str]) -> None:
     prose, so any two mentions of the opener with no `)` between them failed the build -- which is
     why two helper scripts carry a note telling their own authors not to write the sequence down.
     A guard that shapes the documentation away from naming the hazard is doing harm.
+
+    ⛔ AND IT PARSES THE BLOCK BY HAND, BECAUSE THIS RUNS WHERE PyYAML DOES NOT EXIST. An earlier
+    version reached for `yaml.safe_load` to pull out `shell_command`, which works locally and dies
+    in CI with `ModuleNotFoundError: No module named 'yaml'`: the udt-drift job is STANDARD LIBRARY
+    ONLY on purpose, so that a generated file going stale is still noticed when the generator's own
+    toolchain is absent. A `shell_command: |` block is every following line that is indented or
+    blank, up to the next line that is not -- which needs no parser.
     """
-    import yaml as _yaml
     for name, text in rendered.items():
-        cmd = (_yaml.safe_load(text) or {}).get("shell_command") or ""
+        cmd, lines, taking = "", text.split("\n"), False
+        for line in lines:
+            if taking:
+                if line.strip() and not line.startswith((" ", "\t")):
+                    break
+                cmd += line + "\n"
+            elif line.startswith("shell_command:"):
+                taking = True
         i = 0
         while (i := cmd.find("$(", i)) != -1:
             if i and cmd[i - 1] == "\\":          # the documented escape: passed to the shell
