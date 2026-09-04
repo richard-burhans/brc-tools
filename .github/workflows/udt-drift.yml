@@ -71,3 +71,19 @@ jobs:
             echo "== $w"
             python3 scripts/check_workflow_ports.py "$w"
           done
+
+  # Coordinates are the one thing every other check here is blind to, because a tool whose output
+  # is internally consistent passes them all: right widths, right totals, right coverage
+  # percentages, and a verification script comparing a mask against a FASTA masked FROM that mask.
+  # Three coordinate bugs shipped that way. This asks each coordinate-emitting tool for an
+  # independent answer by a second route and requires the two to agree exactly. Its own job,
+  # because it needs docker and image pulls, and a pull failure must not mask the checks above.
+  coordinates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Coordinates agree with the tools' own output
+        run: python3 scripts/check_coordinates.py

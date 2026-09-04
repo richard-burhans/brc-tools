@@ -191,7 +191,7 @@ XML_ANCHORS = {
                                             "-outfmt interval", "interval2bed.awk",
                                             "lc_classify.py", "toupper"],
     "tools/tantan/tantan.xml": ["tantan in.fa", "lc2bed.awk", "lc_classify.py", "toupper"],
-    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ANOtoBED", "ano2bed6.awk", "toupper"],
+    "tools/fastan/fastan.xml": ["FAtoGDB", "FasTAN", "ONEview", "ano2bed6.awk", "toupper"],
     "tools/masking_table/masking_table.xml": ["masking_table.py", "--dustmasker", "--union"],
 }
 
@@ -629,7 +629,7 @@ shell_command: |
   BRC_AWK
   set -o pipefail
   cp '$(inputs.ano.path)' scan.1ano &&
-  ANOtoBED scan.1ano | {{ grep -v '^#' || [ $? -eq 1 ]; }} | awk -f ano2bed6.awk \\
+  ONEview scan.1ano | awk -f ano2bed6.awk \\
     | LC_ALL=C sort -k1,1 -k2,2n > annotated.bed6
 inputs:
   - name: ano
