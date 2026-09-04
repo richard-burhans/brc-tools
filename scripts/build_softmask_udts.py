@@ -203,7 +203,12 @@ XML_REQUIREMENTS = {
     "tools/dustmasker/dustmasker.xml": {"blast": "2.17.0"},
     "tools/windowmasker/windowmasker.xml": {"blast": "2.17.0"},
     "tools/tantan/tantan.xml": {"tantan": "51"},
-    "tools/fastan/fastan.xml": {"fastan": "0.8"},
+    # ⚠ BOTH packages, because both are pinned in build(). `fastga` was left out, so the bump from
+    # 1.5 to 1.5.20260729 (commit a45e0a7, on this branch) sailed past assert_sources_aligned while
+    # `fastan_gdb` and `fastan_bed` kept their container -- the exact drift the header above claims
+    # this block covers, performed by this repo, on this file. It is not cosmetic: released fastga
+    # 1.5's ANOtoBED cannot open a .1ano written by fastan 0.8, which is why the bump happened.
+    "tools/fastan/fastan.xml": {"fastan": "0.8", "fastga": "1.5.20260729"},
     "tools/masking_table/masking_table.xml": {"python": "3.12"},
 }
 

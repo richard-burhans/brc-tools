@@ -11,10 +11,19 @@ container: quay.io/biocontainers/gffread:0.12.7--h077b44d_6
 # with RSTART/RLENGTH, which is everything build_anchor_inputs.py does. So the port stays a single
 # job instead of inheriting the split.
 #
-# ⛔ THIS IS A PORT AND MUST NOT CHANGE WHAT COMES OUT. Both outputs are verified byte-identical to
-# tools/anchor_prep/build_anchor_inputs.py on the tool's own test-data and on the real cs10 RefSeq
-# annotation (40,185 BED12 rows, 33,672 isoform rows). Where the original has a defect, this
-# REPORTS it and reproduces it; see the two warnings below.
+# ⛔ THIS IS A PORT AND MUST NOT CHANGE WHAT COMES OUT -- AND HERE IS EXACTLY WHAT WAS COMPARED.
+# Both outputs are byte-identical to tools/anchor_prep/build_anchor_inputs.py, over the tool's own
+# test-data, a 25-annotation randomised fuzz set, and the real cs10 RefSeq annotation (40,185 BED12
+# rows, 33,672 isoform rows) -- with BOTH SIDES GIVEN THE SAME INPUT, which for cs10 means the
+# strand-filtered `nuclear.gff3`.
+#
+# ⚠ THAT QUALIFIER IS NOT A HEDGE, IT IS THE WHOLE REASON THE FILTER EXISTS. Handed the RAW cs10
+# GFF3 the classic tool produces nothing at all: gffread aborts on the two `?`-strand features of
+# the trans-spliced mitochondrial nad1 and emits ZERO BED records for the whole 29,813-gene
+# annotation (see the strand_filter note below). So "byte-identical on raw cs10" is not a claim
+# anyone could make in either direction, and an earlier version of this comment implied it. The
+# port's contract is: given an input the original can process, produce what the original produces.
+# Where the original has a defect this REPORTS it and reproduces it; see the two warnings below.
 shell_command: |
   cat > strand_filter.awk <<'BRC_AWK'
   # ⛔ gffread ABORTS ON A STRAND IT CANNOT PARSE, AND TAKES THE WHOLE ANCHOR WITH IT. NCBI RefSeq

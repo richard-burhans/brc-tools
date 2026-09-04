@@ -148,7 +148,13 @@ def container_exists(image, timeout=20):
             with urllib.request.urlopen(url, timeout=timeout) as r:
                 answer = bool(json.load(r).get("tags"))
         except Exception:                               # noqa: BLE001
-            pass
+            # ⛔ `None`, NOT `pass` -- AND THE DOCSTRING ABOVE ALREADY SAID SO. Falling through left
+            # `answer` at the False that depot's 404 produced, and the caller then reports "neither
+            # depot nor quay has that tag" having never heard from quay. The failure this leg
+            # exists for -- a freshly built image depot has not mirrored yet -- combined with a
+            # blocked or throttled quay therefore turns CI red on a correct tool, and the wrong
+            # answer is CACHED and reused after the network recovers.
+            answer = None
     if answer is not None:
         cache[image] = answer
         CACHE.parent.mkdir(parents=True, exist_ok=True)

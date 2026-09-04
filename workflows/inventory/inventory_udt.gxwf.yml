@@ -155,6 +155,13 @@ steps:
       identifiers: panel_identifiers/output
     state:
       ksize: 31
+      # ⚠ NAMED, NOT LEFT TO ITS DEFAULT. 1000 IS the tool's default, so nothing about the run
+      # changes -- but `run_udt_workflow`'s `fill_step_defaults` cannot resolve a `brc-*` tool
+      # (/api/tools/brc-sourmash-panel 404s), so an unnamed UDT parameter is one Galaxy answers
+      # with "No value found for X. Using default", and this project's invoke() refuses on upgrade
+      # messages. It is also the number the tool's own refusal tells an operator to lower when a
+      # panel member is too small to sketch, so it belongs where they can see it.
+      scaled: 1000
 
   # ---- BUSCO on the proteomes -------------------------------------------------------------------
   busco:

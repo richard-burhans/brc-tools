@@ -85,14 +85,15 @@ shell_command: |
       _dupes = sorted({i for i in ids if ids.count(i) > 1})
       sys.exit(f"duplicate element identifier(s) {_dupes[:3]}: a repeat would put two genomes in one "
                f"row of the matrix. Counts alone cannot detect this.")
-  # ⛔ AND A SET OF STRINGS IS NOT A SET OF FILENAMES. While signatures were staged at
-  # `stage/{name}.sig`, the duplicate check above was defeated by one character: `gA` and `./gA` are
-  # distinct strings that name the SAME file, so g2's sketch overwrote g1's, the matrix came out
-  # `./gA,./gA` with an off-diagonal 1.0 that is a self-comparison, and g1 was absent -- exit 0, the
-  # exact outcome the check exists to prevent. `../escaped` was worse: it wrote the signature OUTSIDE
-  # the working directory, which in Galaxy means into the job's parent. Staging by INDEX takes the
-  # filename out of the identifier's hands entirely; the name still travels, in `--name`, which is
-  # where the CSV labels come from.
+  # ⚠ AND THESE NAMES ARE STILL REFUSED, THOUGH THE REASON HAS CHANGED. While signatures were staged
+  # at `stage/{name}.sig` this was a data-loss guard: `gA` and `./gA` are distinct strings naming the
+  # SAME file, so one sketch overwrote the other, the matrix came out `./gA,./gA` with an
+  # off-diagonal 1.0 that is a self-comparison, and a genome was absent -- exit 0. `../escaped` wrote
+  # the signature outside the job directory. Staging by INDEX (below) removed both hazards outright.
+  # What is left is narrower and worth keeping anyway: such a name still travels into `--name` and
+  # becomes a COLUMN LABEL in similarity.csv, where a leading dash or an embedded path reads as a
+  # malformed strain and joins against nothing downstream. Refusing early says so; it is no longer
+  # the difference between a correct matrix and a corrupt one.
   _bad = [i for i in ids if "/" in i or i in (".", "..") or i.startswith("-")]
   if _bad:
       sys.exit(f"element identifier(s) {_bad[:3]} contain a path separator, are a directory alias, or "
@@ -143,7 +144,7 @@ shell_command: |
                   *sigs], check=True)
   subprocess.run(["sourmash", "plot", "--labels", "cmp"], check=True)
   BRC_PY
-  python3 sourmash_panel.py --rendered rendered.txt --ids '$(inputs.identifiers.path)' --ksize '$(inputs.ksize)'
+  python3 sourmash_panel.py --rendered rendered.txt --ids '$(inputs.identifiers.path)' --ksize '$(inputs.ksize)' --scaled '$(inputs.scaled)'
 inputs:
   - name: assemblies
     type: data_collection
@@ -162,6 +163,21 @@ inputs:
     type: integer
     value: 31
     label: k-mer size
+  - name: scaled
+    type: integer
+    value: 1000
+    min: 1
+    label: MinHash scaled factor (lower = finer, more hashes)
+    help: >-
+      ⛔ EXPOSED BECAUSE THE TOOL'S OWN ERROR MESSAGE TELLS YOU TO CHANGE IT. A sequence too small
+      to contribute a hash at this resolution sketches to nothing, and its row in the similarity
+      matrix is then byte-identical to a genome that shares nothing with anyone -- so the tool
+      refuses rather than publish it. That refusal is fatal for the WHOLE panel (one job sketches
+      every assembly), and until this input existed the remedy it names was unreachable: `--scaled`
+      was an argparse default the tool form neither declared nor passed. Measured at scaled=1000,
+      k=31: a 360 nt viroid gives 1 hash, a 2 kb plasmid 3, a 5 kb virus 7, a 16.6 kb mitochondrion
+      14, a 200 kb genome 195. Lower this for a panel with small members; the default suits
+      megabase assemblies.
 outputs:
   - name: similarity
     type: data

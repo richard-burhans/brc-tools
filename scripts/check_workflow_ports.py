@@ -326,8 +326,15 @@ def main() -> int:
         # the moment a tool declared an optional data input the step legitimately leaves empty
         # (WF-C2's Liftoff-only pass connects none of the four TOGA2 files, which is the whole
         # point of that edition). `optional: true` is the author saying so in the tool.
-        declared = {n for n, spec in udt[tid]["inputs"].items() if not (spec or {}).get("optional")}
-        for m in sorted(declared - given):
+        # ⛔ TWO SETS, BECAUSE THEY ANSWER TWO QUESTIONS. Exempting optional inputs from the
+        # UNSUPPLIED test is right; using that same reduced set for the UNKNOWN-PARAM test made
+        # CONNECTING a legitimately declared optional input a hard PROBLEM. Reproduced: wiring
+        # `loss_summary` on WF-C2's `p_merge` -- which is exactly what the rescue half "built and
+        # waiting" in that file's doc will do -- reported `brc-phase-c4-merge declares no input
+        # 'loss_summary'` and exited 1. A fix that forbids the thing it was making possible.
+        declared = set(udt[tid]["inputs"])
+        required = {n for n, spec in udt[tid]["inputs"].items() if not (spec or {}).get("optional")}
+        for m in sorted(required - given):
             bad("UNSUPPLIED", f"{name}.{m}", f"{tid} declares input {m!r}; step supplies nothing")
         for e in sorted(given - declared):
             bad("UNKNOWN-PARAM", f"{name}.{e}",
@@ -548,16 +555,19 @@ def main() -> int:
     #    `state:` block, because a different wrapper revision can rename a parameter -- and the
     #    state blocks in this repository exist precisely to avoid allow_tool_state_corrections.
     #    ⚠ A BUILT-IN HAS NO VERSION TO PIN, so calling it unpinned is advice nobody can take.
-    #    `cat1` and the collection-operation tools -- `__FILTER_FROM_FILE__`,
-    #    `__RELABEL_FROM_FILE__`, `__CROSS_PRODUCT_FLAT__` and the rest of the `__NAME__` family --
-    #    ship inside Galaxy itself: there is no owner/repo path, no ToolShed revision, and their
-    #    version tracks the server release. WF-C's UDT edition is eight of them, and reporting all
-    #    eight as UNPINNED next to a `doc:` that argues pinning costs nothing reads as a
-    #    contradiction in the workflow rather than a gap in the checker, which is what it is.
+    #    `cat1`, `Cut1`, `Grep1` and the collection-operation `__NAME__` family all ship inside
+    #    Galaxy itself: no owner/repo path, no ToolShed revision, and a version that tracks the
+    #    server release.
+    #
+    #    ⛔ AND AN EXEMPTION LIST WAS THE WRONG INSTRUMENT. Naming `cat1` and `__NAME__` still left
+    #    `Cut1`, `Grep1`, `Filter1`, `sort1` and every other classic built-in being told to pin a
+    #    revision they do not have -- while WF-A's port advertised "removes an unpinned `Cut1` from
+    #    the graph" as a benefit of the port. The LIVE SCHEMA answers this exactly: a ToolShed tool
+    #    reports a `tool_shed_repository` and a built-in does not. So the note is withheld until
+    #    the remote half has asked, which is also the only point at which it can say what the bare
+    #    id actually resolves to.
     unpinned = [(n, s["tool_id"]) for n, s in steps.items()
-                if s.get("tool_id") not in udt and "/" not in s.get("tool_id", "")
-                and s.get("tool_id") != "cat1"
-                and not re.fullmatch(r"__[A-Z0-9_]+__", s.get("tool_id", ""))]
+                if s.get("tool_id") not in udt and "/" not in s.get("tool_id", "")]
 
     # -- 7. remote parameters AND remote OUTPUT NAMES ---------------------------------------
     #    ⚠ THE OUTPUT HALF IS NOT OPTIONAL. An earlier version checked output names only for the
@@ -646,7 +656,7 @@ def main() -> int:
                         f"{tid.split('/')[-2] if '/' in tid else tid} v{sch.get('version')} "
                         f"has no such parameter")
             for n2, t2 in unpinned:
-                if n2 == name:
+                if n2 == name and sch.get("tool_shed_repository"):
                     vs = sch.get("versions") or []
                     notes.append(f"UNPINNED  {name}: tool_id {t2!r} carries no version; "
                                  f"{url} has {len(vs)} installed and resolves it to "

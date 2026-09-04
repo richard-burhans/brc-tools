@@ -418,6 +418,26 @@ shell_command: |
                     len(_gff_chroms), sorted(_gff_chroms)[:3], sorted(chrom_sizes)[:3])
           sys.exit(1)
 
+      # ⛔ AND SHARING THE SEQUENCE NAMES IS NOT THE SAME AS BEING THE RIGHT GENOME. The check above
+      # only fires when the GFF and the FASTA have NO name in common, which catches a cross-species
+      # mix-up and nothing else. This pipeline's panels are strains of ONE species with identical
+      # chromosome names, so a positional mis-pairing -- two independent cross products joined by
+      # POSITION, which is how WF-C2 wires this tool -- shares every seqid and sails straight past it.
+      # Coordinates do not: Liftoff projects ONTO the query, so a projected gene cannot extend past
+      # the end of the query chromosome it was projected onto. A gene that does is proof that this
+      # FASTA is not the genome these coordinates describe.
+      _oob = [g for g in genes
+              if g.chrom in chrom_sizes and g.end > chrom_sizes[g.chrom]]
+      if _oob:
+          LOG.error("%d of %d gene(s) lie beyond the end of the query sequence they are annotated "
+                    "on -- e.g. %s at %s:%d-%d where %s is %d bp. Liftoff projects ONTO this genome, "
+                    "so a projection cannot overrun it: this FASTA is not the assembly these "
+                    "coordinates came from. Every sequence-dependent rule would read the wrong bases "
+                    "and most would silently pass. Refusing.",
+                    len(_oob), len(genes), _oob[0].gene_id, _oob[0].chrom, _oob[0].start,
+                    _oob[0].end, _oob[0].chrom, chrom_sizes[_oob[0].chrom])
+          sys.exit(1)
+
       ref_bed_lines = read_reference_bed(args.reference_bed)
 
       triage_rows = []

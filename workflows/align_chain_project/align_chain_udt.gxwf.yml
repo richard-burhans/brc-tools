@@ -17,8 +17,14 @@ doc: >-
   from the classic file by exactly the two `chainStitchId` steps, which become the User-Defined Tool
   `brc-chain-stitch-id` (generated from `tools/chainStitchId/chainStitchId.xml`, held at
   `udt/chain_stitch_id.gxtool.yml`). Parity is mechanical rather than asserted: the two files have
-  identical `inputs`, identical `outputs`, the same step labels in the same order, and exactly two
-  steps whose content differs -- those two `tool_id`s.
+  identical `inputs`, identical `outputs`, the same step labels in the same order, and FIVE steps
+  whose content differs. Two of the five are those `tool_id`s. The other three are additions
+  argued for in comments further down this file, and are inert on the pinned revisions:
+  `kegalign` names thirteen values that are already its defaults, and the two
+  `__CROSS_PRODUCT_FLAT__` steps name `join_identifier: '_'`, also already the default -- both so
+  that an invocation which refuses on Galaxy's "Using default" upgrade messages does not stop
+  there. ⚠ This sentence said TWO for as long as it took someone to run a structural diff; the
+  diff is the authority, not the summary.
 
   ⚠ IT PINS TOOLSHED REVISIONS, WHERE THE WF-B UDT EDITION DELIBERATELY DOES NOT, and the
   difference is measured rather than stylistic. All eight ids here were resolved against

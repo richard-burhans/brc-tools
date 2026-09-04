@@ -74,20 +74,36 @@ def identifiers(inline, path, what):
     column contract of the relabel map below -- `{a}.{b}<TAB>{a}_{b}` becomes a three-column row
     and __RELABEL_FROM_FILE__ reads the wrong field.
     """
+    if inline is not None and any(c.isspace() and c != " " for c in inline):
+        raise SystemExit(f"{what} identifiers contain a tab or line break, which a space-joined "
+                         f"argument cannot round-trip; pass --{what}s-file, which carries them "
+                         f"verbatim, one per line")
     ids = ([x for x in inline.split() if x] if inline is not None
            else [x.strip() for x in open(path, encoding="utf-8-sig") if x.strip()])
-    # ⛔ ANY WHITESPACE, NOT JUST A TAB -- OTHERWISE THE TWO EDITIONS COMPUTE DIFFERENT GRIDS.
-    # The XML wrapper passes `" ".join(identifiers)` into --anchors and this splits on whitespace,
-    # so ONE anchor named `P knowlesi H` becomes THREE. Measured: the XML edition produced a
-    # 12-row keep list against the UDT edition's correct 2, selecting chains that do not exist and
-    # relabelling nothing -- the "identifiers all look right, TOGA2 processes 0 chains" failure
-    # this tool exists to prevent. Galaxy permits spaces in element identifiers, so refusing here
-    # is what stops the wrapper from silently disagreeing with the tool it is supposed to mirror.
-    bad = [i for i in ids if any(c.isspace() for c in i)]
+    # ⛔ ANY WHITESPACE, NOT JUST A TAB. Galaxy permits a space in an element identifier, and a
+    # space-JOINED argument cannot carry one: `P knowlesi H` arrives as three anchors, which
+    # produced a nine-row keep list naming chains that do not exist, exit 0, against the correct
+    # two -- the "identifiers all look right, TOGA2 processes 0 chains" failure this tool exists to
+    # prevent.
+    #
+    # ⚠ AND THE REFUSAL ALONE DID NOT FIX IT, WHICH IS WHY THE WRAPPER CHANGED TOO. On the inline
+    # `--anchors` path the split happens BEFORE this check, so no token can still contain a space
+    # and the guard could never fire -- it covered the User-Defined Tool edition and not the XML
+    # wrapper it is supposed to mirror, while a comment here claimed the opposite. The wrapper now
+    # writes the identifiers to a configfile, one per line, so both editions take the `-file` path
+    # and this check covers both. The inline form is kept for hand invocation, where a caller who
+    # passes whitespace gets the same silent split -- so it is validated here as well, on the raw
+    # string, before anything is split.
+    # ⚠ A SPACE IS NOW FINE ON THE FILE PATH, AND ONLY THERE. One identifier per line round-trips
+    # a space perfectly, and both editions take that path since the wrapper grew its configfile --
+    # so refusing spaces outright would reject names Galaxy allows and both tools can now handle.
+    # A TAB or a NEWLINE is different: the relabel map is `{a}.{q}<TAB>{a}_{q}` and the keep and
+    # order lists are one entry per line, so either character silently redraws the column or row
+    # boundaries that __RELABEL_FROM_FILE__ and __FILTER_FROM_FILE__ read.
+    bad = [i for i in ids if "\t" in i or "\n" in i or "\r" in i]
     if bad:
-        raise SystemExit(f"{what} identifier(s) contain whitespace, which the XML wrapper's "
-                         f"space-joined argument cannot round-trip and which breaks the relabel "
-                         f"map's column contract: {bad[:3]}")
+        raise SystemExit(f"{what} identifier(s) contain a tab or a line break, which redraws the "
+                         f"column and row boundaries of the keep list and relabel map: {bad[:3]}")
     if len(set(ids)) != len(ids):
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         raise SystemExit(f"duplicate {what} identifier(s) {dupes[:3]}: the grid is a cross product, "
