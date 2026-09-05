@@ -1,29 +1,49 @@
 ## Apptainer definition for the TOGA2 image this wrapper runs from.
 ##
-## Derived from upstream supply/containers/apptainer.def
-## (github.com/hillerlab/TOGA2) with two local changes, both marked inline:
+## ⚠ THE PULLABLE OCI IMAGE IS NOW THE PRIMARY ARTIFACT, NOT THIS FILE. See
+## container/ -- @TOGA_IMAGE@ in macros.xml names quay.io/galaxy/toga2. This def
+## remains for sites that want to build their own SIF, and it is upstream's,
+## with two local changes marked inline. It is NOT what the Dockerfile builds:
+## that one builds from upstream's own conda.yaml and requirements.txt, which
+## this def does not use.
 ##
-##   1. the clone is pinned to the v2.0.8 TAG. Upstream clones the default
-##      branch, so the image is not reproducible; v2.0.8 is the version this
-##      wrapper's CLI mapping and output schema were verified against.
+##   1. the clone is pinned to the v2.0.9 TAG. Upstream clones the default
+##      branch, so the image is not reproducible.
 ##   2. apt is forced to IPv4. Our host has no working IPv6 egress while DNS
 ##      returns AAAA records first, and apt does not fall back, so the
-##      in-container apt-get dies mid-build without this.
+##      in-container apt-get dies mid-build without this. It is a property of
+##      that machine, not of TOGA2, which is why the Dockerfile omits it.
 ##
 ## Build (both dirs must already exist):
 ##
 ##   sudo APPTAINER_CACHEDIR=<cache> APPTAINER_TMPDIR=<tmp> \
-##       apptainer build toga2-2.0.8.sif toga2-2.0.8.def
+##       apptainer build toga2-2.0.9.sif toga2-2.0.9.def
 ##
 ## ~7-10 minutes, ~5.5 GB. Place the SIF on shared storage so every compute
 ## node sees one copy, and point @TOGA_IMAGE@ in macros.xml at it.
 ##
-## KNOWN ISSUE, not yet fixed here: upstream installs Nextflow from
-## get.nextflow.io, i.e. whatever is newest at BUILD time, and a current build
-## ships a parser that rejects TOGA2 2.0.8's own execute_joblist.nf. The
-## wrapper works around it with NXF_SYNTAX_PARSER=v1, but that parser is
-## deprecated; the durable fix is to pin NXF_VER below.
-## Reported upstream: github.com/hillerlab/TOGA2/issues/42
+## ⚠ THE NEXTFLOW PARSER PROBLEM IS FIXED UPSTREAM AND NEEDS NO PIN HERE. An
+## earlier version of this header called unpinned Nextflow a KNOWN ISSUE and
+## said "the durable fix is to pin NXF_VER below". Both halves were wrong.
+## Through v2.0.8, TOGA2's own execute_joblist.nf put its argument guard and
+## channel construction at the TOP LEVEL, which Nextflow's strict parser
+## (25.10+) rejects: "Statements cannot be mixed with script declarations".
+## v2.0.9 moved both inside `workflow {}` (commit 2ee232c). Measured:
+##
+##     script                NF 24.10.5    NF 26.04.6
+##     v2.0.6/7a/8           3 of 3 OK     compilation failed
+##     v2.0.9                3 of 3 OK     3 of 3 OK
+##
+## So the fix is the TAG. Pinning Nextflow backwards would also violate
+## conda.yaml's own nextflow>=25.10.0 floor. Reported upstream as
+## github.com/hillerlab/TOGA2/issues/42, which v2.0.9 closes in fact though the
+## issue is still open.
+##
+## ⚠ A PREVIOUS REVISION PINNED COMMIT 407b8dd1 ("v2.0.9f"), on the grounds that
+## the parser fix and version bump "landed after" tag v2.0.9. They did not:
+## 2ee232c, 4668aee and 407b8dd are all ANCESTORS of v2.0.9, and v2.0.9 is the
+## same commit as main (4684c67). v2.0.9f is upstream's internal version STRING
+## -- what `toga2.py --version` prints -- not a ref. The tag is what to pin.
 ##
 ## The upstream %runscript writes typographic quotes into /etc/passwd
 ## (U+201C/U+201D rather than ASCII). Harmless here since Galaxy invokes the
@@ -80,7 +100,7 @@ Stage: build
     rm /bin/sh && ln -f /bin/bash /bin/sh
 
     ## clone the current TOGA2 repo
-    git clone --branch v2.0.8 --depth 1 --recurse-submodules https://github.com/hillerlab/TOGA2 /opt/TOGA2
+    git clone --branch v2.0.9 --depth 1 --recurse-submodules https://github.com/hillerlab/TOGA2 /opt/TOGA2
     cd /opt/TOGA2
     ## create TOGA2 running environment
     python3 -m venv toga2

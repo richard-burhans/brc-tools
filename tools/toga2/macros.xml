@@ -1,41 +1,62 @@
 <?xml version="1.0"?>
 <macros>
-    <token name="@TOOL_VERSION@">2.0.8</token>
+    <token name="@TOOL_VERSION@">2.0.9</token>
     <token name="@VERSION_SUFFIX@">0</token>
     <token name="@PROFILE@">26.0</token>
-
     <!--
-        CONTAINER-ONLY tool (NOT on bioconda). TOGA2 ships as a large
-        container (anaconda3 base + tensorflow + rust + nextflow + CESAR2)
-        that runs Nextflow over real genome alignments.
+        CONTAINER-ONLY tool (NOT on bioconda). The upstream hillerlab/TOGA2
+        repo ships ONLY an apptainer/Singularity def
+        (supply/containers/apptainer.def); there is no published Docker image,
+        no bioconda package and no biocontainer, so this tool cannot resolve
+        through conda like the rest of this repo.
 
-        The upstream hillerlab/TOGA2 repo ships ONLY an apptainer/Singularity
-        def (supply/containers/apptainer.def); there is no published Docker
-        image, no bioconda package and no biocontainer, so this tool cannot
-        resolve through conda like the rest of this repo.
+        `tools/toga2/container/` fills that gap: it builds a pullable OCI
+        image, so this token is a `docker://` reference the container resolver
+        fetches like any other. A deployment no longer has to build a 5.5 GB
+        SIF and stage it on shared storage before this tool can run at all.
+        The def stays in this directory: it remains the way to produce a SIF
+        for a site that wants one.
 
-        We build a SIF from the upstream def, pinned to the v2.0.8 tag that the
-        wrapper's CLI mapping and output schema were verified against (upstream
-        main is already past v2.0.9; re-verify before moving the pin), and
-        place it on shared storage so every compute node sees one copy:
+        &#8859; THE IMAGE IS NOT A REPRODUCTION OF THE DEF. It builds from
+        upstream's OWN conda.yaml and requirements.txt, which the def does not
+        use &#8212; the def takes whatever python continuumio/anaconda3 carries
+        and installs Nextflow from get.nextflow.io at build time. See the
+        README beside the Dockerfile for every deviation and why.
 
-            apptainer build toga2-2.0.8.sif tools/toga2/toga2-2.0.8.def
+        &#9888; PINNED TO v2.0.9, AND THE MOVE OFF v2.0.8 WAS A BUG FIX, NOT
+        HOUSEKEEPING. Through v2.0.8, TOGA2's own
+        nextflow_configs/execute_joblist.nf put its argument guard and channel
+        construction at the top level, which Nextflow's strict parser (25.10
+        and later) rejects outright: "Statements cannot be mixed with script
+        declarations". v2.0.9 moved both inside `workflow {}`. Measured across
+        both Nextflow generations, v2.0.6/7a/8 fail on 26.04.6 and pass on
+        24.10.5, while v2.0.9 passes on both. That is why the command block no
+        longer exports NXF_SYNTAX_PARSER=v1, and why pinning Nextflow backwards
+        is the wrong response should this recur &#8212; check whether upstream
+        fixed the script first.
 
-        That def is in this directory. It is upstream's with the clone pinned
-        to the v2.0.8 tag and apt forced to IPv4; see its header for why.
+        &#9888; NOTE THE LAYOUT MOVED TOO: v2.0.9 relocated conda.yaml to
+        assets/venv/ and requirements.txt to assets/requirements/. The
+        Dockerfile discovers both rather than hardcoding either.
+
+        &#9888; THIS IS A DIGEST, NOT A TAG, ON PURPOSE. `:2.0.9` is whatever
+        was pushed there last; the digest below is the exact image whose build
+        ran a complete TOGA2 projection and produced the four-file output
+        schema this wrapper declares. A job can therefore say afterwards which
+        image produced its result &#8212; and "the container was silently
+        substituted" is a failure this project has already been bitten by.
+        The equivalent tag is `quay.io/galaxy/toga2:2.0.9`; if you re-pin to a
+        rebuilt image, re-run the WF-C.4 comparison first.
 
         Deployments that keep the image elsewhere only need to override this
-        token. Replace with a digest-pinned `docker://` reference once an
-        upstream image is published.
+        token.
     -->
-    <token name="@TOGA_IMAGE@">/data/containers/toga2-2.0.8.sif</token>
-
+    <token name="@TOGA_IMAGE@">docker://quay.io/galaxy/toga2@sha256:2c30f162d9b026406f5f975492d40dd1e15cf8369014cf4b3ee731662f66fbe5</token>
     <xml name="requirements">
         <requirements>
             <container type="singularity">@TOGA_IMAGE@</container>
         </requirements>
     </xml>
-
     <xml name="citations">
         <citations>
             <citation type="doi">10.1126/science.abn3107</citation>

@@ -1,0 +1,4 @@
+# Only test-data is consumed from the context; keep the rest out of the build.
+*
+!test-data
+!test-data/**

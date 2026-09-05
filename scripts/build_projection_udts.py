@@ -9,13 +9,24 @@ workflow imports there and cannot be invoked at all: collection_self_pairs (alre
 WF-A as `brc-self-pairs`), collection_anchor_grid, phase_c2_triage, toga2 and phase_c4_merge.
 This generator emits the three that are portable.
 
-⛔ toga2 IS NOT ONE OF THEM, AND NOT FOR WANT OF TRYING. A User-Defined Tool is a container plus a
-command, so it can only wrap an image a Galaxy can PULL. tools/toga2/macros.xml records that
-upstream ships only an apptainer/Singularity def -- no published Docker image, no bioconda package,
-no biocontainer -- and that this project builds its own SIF onto shared storage at
-/data/containers/toga2-2.0.8.sif. A local .sif path is not something usegalaxy.org can resolve.
-Until an upstream image exists the TOGA2/CESAR2 rescue cannot run there by any means, which is why
-workflows/align_chain_project/project_annotations_udt.gxwf.yml is the Liftoff-only pass.
+⛔ toga2 IS NOT ONE OF THEM, AND THE REASON IS RESOURCES, NOT THE CONTAINER. An earlier version of
+this note said a UDT "can only wrap an image a Galaxy can PULL", and that upstream shipping only an
+apptainer def was therefore the blocker -- so that once a pullable image existed the rescue would
+work as a UDT. That inference was wrong, and tools/toga2/container/ has since made the premise moot
+by publishing one.
+
+The real obstacle is what a UDT gets. On usegalaxy.org a UDT is a single sandboxed shell_command
+with GALAXY_SLOTS=1 and ~3.8 GB (measured, udt/env_probe.gxtool.yml). TOGA2's preprocessing step
+requests 6 GB -- hardcoded at toga_main.py:1183, not settable from the CLI -- and Nextflow's local
+executor is cgroup-aware, so it does not degrade, it dies: "Process requirement exceeds available
+memory -- req: 6 GB; avail: 3.7 GB", then "CRITICAL: All preprocessing step jobs died", zero
+outputs. It can be forced under the ceiling with --cesar_memory_limit 3, but that DISCARDS every
+projection whose exon group needs more before the alignment step -- precisely the hard CESAR2
+re-alignments the rescue pass exists to recover. Silent on toy inputs, lossy at real scale.
+
+TOGA2 also drives its own Nextflow job hierarchy and runs for hours, which is not the shape of a
+UDT. That is why workflows/align_chain_project/project_annotations_udt.gxwf.yml is the Liftoff-only
+pass, and a published image does not change it.
 
 ⚠ THE PYTHON IS INLINED VERBATIM FROM tools/, NOT REWRITTEN. The XML wrappers read their scripts
 from $__tool_directory__, which a UDT has no equivalent of, so the script travels in the command

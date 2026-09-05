@@ -101,9 +101,13 @@ id, not the internal label.
 **Outputs:** `merged_annotations` (12, id `anchor_query`), `classifications` (12).
 
 > **TOGA2 note.** The rescue pass is wired in and on. It is container-only —
-> no bioconda package, no biocontainer — and runs from an Apptainer SIF built
-> from upstream's def, pinned to v2.0.8 (the tag the wrapper's CLI mapping and
-> output schema were verified against). It is GPU-independent but CPU/IO-heavy:
+> upstream publishes no bioconda package and no biocontainer — and now runs
+> from a pullable image, `quay.io/galaxy/toga2` (`tools/toga2/container/`),
+> rather than a SIF each deployment stages itself. The pin moved from v2.0.8 to
+> **v2.0.9**, which is a bug fix, not housekeeping: through v2.0.8 TOGA2's own
+> `execute_joblist.nf` did not parse under Nextflow 25.10+. The wrapper's CLI
+> mapping and output schema were verified against v2.0.8, so re-run the
+> comparison before treating v2.0.9 output as interchangeable. It is GPU-independent but CPU/IO-heavy:
 > **82 minutes for a single cell** on 16 cores, driving its own Nextflow
 > pipeline with the local executor inside one allocation.
 >

@@ -53,13 +53,15 @@ mkdir -p nxf_tmp &&
 export TMPDIR="\$(pwd)/nxf_tmp" &&
 export NXF_HOME="\$(pwd)/.nextflow" &&
 export NXF_ANSI_LOG=false &&
-## The upstream def installs Nextflow from get.nextflow.io, i.e. whatever is
-## newest at BUILD time -- so the image is not reproducible, and a current
-## build ships a Nextflow whose strict parser rejects TOGA2 2.0.8's own
-## execute_joblist.nf ("Statements cannot be mixed with script declarations").
-## Ask for the legacy parser. NOTE: the v1 parser is deprecated upstream, so
-## the durable fix is to pin NXF_VER in the container build instead.
-export NXF_SYNTAX_PARSER=v1 &&
+## NOTE: there is deliberately NO `export NXF_SYNTAX_PARSER=v1` here any
+## more. Through v2.0.8, TOGA2's own execute_joblist.nf put its argument
+## guard and channel construction at the top level, which Nextflow's strict
+## parser (25.10+) rejects: "Statements cannot be mixed with script
+## declarations". The workaround was to ask for the deprecated legacy
+## parser. v2.0.9 moved both inside `workflow {}`, so the script parses on
+## both Nextflow generations and the workaround is dead weight pointing at
+## a flag upstream intends to remove. Verified by the container build,
+## which runs a complete TOGA2 projection without it.
 
 toga2.py run
     --ref_2bit ref.2bit
@@ -100,17 +102,55 @@ toga2.py run
     </outputs>
     <tests>
         <!--
-            No functional test is provided. TOGA2 is a container-only
-            (anaconda3 plus tensorflow, rust, nextflow, CESAR2; multi-GB),
-            Nextflow-driven projection pipeline that re-aligns exons over
-            REAL genome alignments; it cannot run a meaningful projection on
-            tiny synthetic data. All five inputs are required, so an
-            input-less Galaxy test cannot validate on a modern profile;
-            a CLI smoke test (toga2.py run help, exit 0) is instead run
-            directly against the toga2:local image at build time. A real
-            functional test requires a genuine reference/query genome pair
-            plus a cleaned chain. Documented here rather than faked.
+            &#9888; THE CLAIM THAT REPLACED THIS ONE WAS FALSE. The previous
+            note here said TOGA2 "cannot run a meaningful projection on tiny
+            synthetic data" and shipped no test on that basis. It can. A 6 kb
+            reference, a 6 kb query carrying a 200 bp deletion, one two-exon
+            in-frame BED12 transcript, a one-line isoform table and a one-line
+            chain drive a complete run &#8212; "TOGA2 pipeline successfully
+            finished" &#8212; producing all four declared outputs in about a
+            minute, inside a read-only rootfs.
+
+            That matters beyond having a test at all: the image's dependency
+            gate (upstream's check_dependencies.py) verifies only that three
+            third-party programs are PRESENT, and passes on an image with
+            Nextflow, toga2.py and CESAR2.0 deleted. This test is the only
+            thing in the repo that asserts TOGA2 actually runs and still emits
+            the four-file schema Phase C.4 merge consumes. The same fixtures
+            run as a build-time gate in container/Dockerfile.
+
+            It is a schema and liveness test, not a biological one: on inputs
+            this small nothing is rejected for memory, so it cannot detect
+            projection loss at real scale.
         -->
+        <test expect_num_outputs="4">
+            <param name="ref_bed12" value="ref.bed12" ftype="bed12"/>
+            <param name="chain" value="cleaned.chain" ftype="txt"/>
+            <param name="ref_fasta" value="ref.fa" ftype="fasta"/>
+            <param name="query_fasta" value="query.fa" ftype="fasta"/>
+            <param name="isoforms" value="isoforms.tsv" ftype="tabular"/>
+            <output name="query_annotation">
+                <assert_contents>
+                    <has_text text="tx2"/>
+                </assert_contents>
+            </output>
+            <output name="query_genes">
+                <assert_contents>
+                    <has_text text="gene2"/>
+                </assert_contents>
+            </output>
+            <output name="orthology_classification">
+                <assert_contents>
+                    <has_text text="tx2"/>
+                    <has_n_lines n="2"/>
+                </assert_contents>
+            </output>
+            <output name="loss_summary">
+                <assert_contents>
+                    <has_text text="tx2"/>
+                </assert_contents>
+            </output>
+        </test>
     </tests>
     <help format="markdown"><![CDATA[
 **TOGA2 ortholog rescue (WF-C.4 pass 2)**
@@ -162,14 +202,18 @@ TOGA1 (`toga.py`, v1.1.7) interface (TOGA1 -> TOGA2):
 
 **Operational notes**
 
-- *Container.* `toga2:local` is built from the upstream apptainer.def,
-  translated to a Dockerfile (`FROM continuumio/anaconda3`). The image has no
-  published Docker tag upstream; rebuild locally or pin to a digest once
-  published.
+- *Container.* Upstream publishes no Docker image, bioconda package or
+  biocontainer, only an apptainer def. `tools/toga2/container/` builds a
+  pullable image from upstream's *own* `conda.yaml` and `requirements.txt`
+  (which the def itself does not use), pinned to the `v2.0.9` tag; the
+  `@TOGA_IMAGE@` token in `macros.xml` names it. Prefer a digest over the tag
+  once published.
 - *Gating.* The upstream driver skips this step when the chain is missing or
   the Phase C.2 rescue set is empty.
-- *Scale.* TOGA2 runs Nextflow over real genome alignments; it is not expected
-  to complete on toy inputs and is IO/CPU heavy.
+- *Scale.* TOGA2 runs Nextflow over real genome alignments and is IO/CPU
+  heavy. It does, however, complete on small synthetic inputs — see the test
+  above — so "it cannot be tested cheaply" is not a reason to skip a test; it
+  is only a reason not to read biology into one.
     ]]></help>
     <expand macro="citations"/>
 </tool>
