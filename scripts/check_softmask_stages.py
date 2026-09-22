@@ -155,17 +155,22 @@ def main() -> int:
         print(f"\nSTAGE 3  {masker}")
         j = run_udt(gi, h["id"], uuids[masker], {"input": {"src": "hda", "id": upper_id}})
         c.wait(j["jobs"][0]["id"], f"{masker} job")
-        # ⚠ Keyed on the OUTPUT NAME, not a substring of the label. The masker's second output is
-        # labelled "uppercased FASTA (feed to lc_classify alongside the intervals)", which also
-        # contains "interval" -- so matching the label made the choice depend on the order Galaxy
-        # happens to return outputs in, and a BED3 check could silently run against a FASTA.
+        # ⚠ Keyed on the OUTPUT NAME, not a substring of the label -- matching the label once made
+        # the choice depend on the order Galaxy happens to return outputs in, so a BED3 check could
+        # silently run against a FASTA.
         o = {x.get("output_name") or gi.datasets.show_dataset(x["id"])["name"]: x["id"]
              for x in j["outputs"]}
         try:
-            bed_id, fa_id = o["intervals"], o["upper_fasta"]
+            bed_id = o["intervals"]
         except KeyError:
-            c.check(f"{masker}: declares intervals + upper_fasta", False, f"got {sorted(o)}")
+            c.check(f"{masker}: declares intervals", False, f"got {sorted(o)}")
             c.die(f"{masker}: unexpected output names")
+        # ⛔ THE SEQUENCE IS THE ONE WE FED IN, NOT ONE THE MASKER MADE. The maskers no longer emit
+        # an uppercased copy: the workflow hands the same `uppercase/output` to the masker and to
+        # lc_classify, so this check must assert against that one dataset or it is not testing the
+        # wiring that runs. A second output reappearing here is a regression.
+        c.check(f"{masker}: emits intervals only", list(o) == ["intervals"], f"outputs {sorted(o)}")
+        fa_id = upper_id
         bt = c.text(bed_id)
         rows = [line for line in bt.splitlines() if line.strip()]
         c.check(f"{masker}: emitted intervals", len(rows) > 0, f"{len(rows):,} BED3 rows")

@@ -14,10 +14,9 @@
 # gap, not for an unknowable hash, and `planemo container_register` is the way to close it.
 # Splitting costs one extra workflow step and needs no new image today.
 #
-# ⚠ THE MASKER EMITS ITS UPPERCASED FASTA AS A SECOND OUTPUT, ON PURPOSE. lc_classify reads the
-# sequence to classify each interval, and it must read the SAME bases the masker saw -- same
-# decompression, same uppercasing. Feeding it the original assembly instead would usually agree and
-# would silently disagree wherever the two paths differ.
+# ⛔ THE MASKER TAKES THE UPPERCASED FASTA AS INPUT AND EMITS ONLY INTERVALS. `lc_classify` is
+# bound to the SAME `uppercase/output` dataset the masker read -- one file by reference, not a
+# second copy derived by repeating the same transformation. See build_softmask_udts.py.
 class: GalaxyUserTool
 id: brc-lc-classify
 version: "0.1.0"
@@ -111,7 +110,8 @@ inputs:
     type: data
     format: fasta
     label: Uppercased FASTA
-    help: the `upper_fasta` output of the matching stage-1 masker, NOT the original assembly
+    help: the SAME FASTA the stage-1 masker read (the workflow's `uppercase/output`), so the
+      intervals index into it exactly -- NOT the original assembly
   - name: intervals
     type: data
     format: bed

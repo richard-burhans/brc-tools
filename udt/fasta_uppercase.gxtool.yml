@@ -2,7 +2,7 @@
 # Edit the wrapper under tools/ (the awk/Python helpers are read from there) and regenerate.
 class: GalaxyUserTool
 id: brc-fasta-uppercase
-version: "0.2.0"
+version: "0.3.0"
 name: Uppercase a FASTA (BRC UDT)
 description: Optionally strip an existing soft-mask so the workflow's output is its OWN mask
 container: quay.io/biocontainers/python:3.12
@@ -18,8 +18,8 @@ shell_command: |
   src = '$(inputs.input.path)'
   with open(src, 'rb') as fh:
       gzipped = fh.read(2) == b'\x1f\x8b'
-  op = (lambda p: gzip.open(p, 'rt', encoding='utf-8', errors='replace')) if gzipped \
-      else (lambda p: open(p, 'rt', encoding='utf-8', errors='replace'))
+  op = (lambda p: gzip.open(p, 'rt', encoding='utf-8-sig', errors='replace')) if gzipped \
+      else (lambda p: open(p, 'rt', encoding='utf-8-sig', errors='replace'))
 
   # ⛔ WHETHER TO STRIP IS A PARAMETER, AND THE REASON IS MEASURED. Discarding the mask an
   # assembly arrived with is NOT free downstream: on Salk_SRIb chr7 x Salk_HAWb chr7, a 1.06%

@@ -14,13 +14,12 @@
 # gap, not for an unknowable hash, and `planemo container_register` is the way to close it.
 # Splitting costs one extra workflow step and needs no new image today.
 #
-# ⚠ THE MASKER EMITS ITS UPPERCASED FASTA AS A SECOND OUTPUT, ON PURPOSE. lc_classify reads the
-# sequence to classify each interval, and it must read the SAME bases the masker saw -- same
-# decompression, same uppercasing. Feeding it the original assembly instead would usually agree and
-# would silently disagree wherever the two paths differ.
+# ⛔ THE MASKER TAKES THE UPPERCASED FASTA AS INPUT AND EMITS ONLY INTERVALS. `lc_classify` is
+# bound to the SAME `uppercase/output` dataset the masker read -- one file by reference, not a
+# second copy derived by repeating the same transformation. See build_softmask_udts.py.
 class: GalaxyUserTool
 id: brc-windowmasker-bed3
-version: "0.4.0"
+version: "0.5.0"
 name: windowmasker -> BED3 (BRC UDT)
 description: NCBI WindowMasker genome-frequency repeats, stage 1 of 2
 container: quay.io/biocontainers/blast:2.17.0--h66d330f_0
@@ -76,29 +75,36 @@ shell_command: |
   /[0-9]+ *- *[0-9]+/ { gsub(/-/, " "); print c, $1, $2 + 1 }
   BRC_AWK
   set -o pipefail
-  { if gzip -t '$(inputs.input.path)' 2>/dev/null; then gzip -cd '$(inputs.input.path)'; else cat '$(inputs.input.path)'; fi; } \
-    | awk 'BEGIN { bom = "\357\273\277" } NR == 1 && substr($0, 1, 3) == bom { $0 = substr($0, 4) } /^>/{print;next}{print toupper($0)}' > upper.fa &&
-  windowmasker -mk_counts -in upper.fa -out counts &&
-  windowmasker -ustat counts -in upper.fa -outfmt interval | awk -f interval2bed.awk > intervals.bed3
+  # ⛔ `set -e` IS LOAD-BEARING HERE, NOT HOUSE STYLE. The decompress branch below writes seq.fa and
+  # then assigns SRC as a SEPARATE statement -- an assignment always succeeds, so without errexit a
+  # failed or truncated `gzip -cd` would leave SRC pointing at a short file and the masker would
+  # mask it and exit 0. That is the exact shape of the USV failure this change removes, so it must
+  # not be reintroduced by the fix for it. check_workflow_ports.py's UNCHAINED-COMMAND rule catches
+  # its absence.
+  set -e
+  if gzip -t '$(inputs.input.path)' 2>/dev/null; then
+    gzip -cd '$(inputs.input.path)' > seq.fa
+    SRC=seq.fa
+  else
+    SRC='$(inputs.input.path)'
+  fi
+  windowmasker -mk_counts -in $SRC -out counts &&
+  windowmasker -ustat counts -in $SRC -outfmt interval | awk -f interval2bed.awk > intervals.bed3
 inputs:
   - name: input
     type: data
     format: fasta,fasta.gz
-    label: Assembly FASTA
-    help: plain or gzipped
+    label: Uppercased assembly FASTA
+    help: the `brc-fasta-uppercase` output, plain or gzipped -- NOT a raw assembly
 outputs:
   - name: intervals
     type: data
     format: bed
     from_work_dir: intervals.bed3
     label: masked intervals (BED3, unclassified)
-  - name: upper_fasta
-    type: data
-    format: fasta
-    from_work_dir: upper.fa
-    label: uppercased FASTA (feed to lc_classify alongside the intervals)
 help:
   format: markdown
   content: |
-    Stage 1 of a two-step port. Emits BED3 intervals plus the uppercased FASTA they index into.
-    Feed BOTH to `brc-lc-classify` to get the content-annotated BED6 the workflow expects.
+    Stage 1 of a two-step port. Emits BED3 intervals into the coordinates of the FASTA it was
+    given. Feed `intervals` to `brc-lc-classify` together with THAT SAME FASTA -- the workflow
+    passes `uppercase/output` to both, so the two are one dataset by reference, not two copies.
