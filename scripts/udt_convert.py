@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import pathlib
 import re
 import sys
@@ -48,7 +49,7 @@ from galaxy_tool_source.binding import load_tool
 from galaxy_tool_source.cheetah_refs import tool_cheetah_references
 from galaxy_tool_source.macros import expanded_detection_root
 
-CONVERTER_VERSION = "0.1.0"
+CONVERTER_VERSION = "0.2.0"
 DEPOT = "https://depot.galaxyproject.org/singularity/"
 
 #: References a converted command may still contain. Everything else is a refusal, because the
@@ -58,6 +59,15 @@ PORTABLE_REFS = {"tool.name", "on_string"}
 
 class Refusal(Exception):
     """Raised with the reason a wrapper cannot be converted. The reason is the product."""
+
+
+def _repo_relative(path: pathlib.Path) -> str:
+    """`path` relative to the git repository holding it, so a stamp never records a home directory."""
+    p = path.resolve()
+    for parent in p.parents:
+        if (parent / ".git").exists():
+            return str(p.relative_to(parent))
+    return p.name
 
 
 def _sha(text: str) -> str:
@@ -76,7 +86,10 @@ def depot_images(cache: pathlib.Path | None) -> list[str]:
         return cache.read_text().splitlines()
     with urllib.request.urlopen(DEPOT, timeout=120) as fh:      # noqa: S310 - fixed https host
         body = fh.read().decode("utf-8", "replace")
-    names = [m.group(1) for m in re.finditer(r'>([A-Za-z0-9_.\-]+%3A[^<]+)</a>', body)]
+    # ⚠ BOTH SPELLINGS. The depot index writes older images as `pkg%3Aver` and newer ones as
+    # `pkg:ver` (measured 2026-09-27: ucsc-axtsort 332-469 encoded, 482 plain). Matching only `%3A`
+    # made every recent build read as "no published biocontainer".
+    names = [m.group(1) for m in re.finditer(r'>([A-Za-z0-9_.\-]+(?:%3A|:)[^<]+)</a>', body)]
     names = [n.replace("%3A", ":") for n in names]
     if cache:
         cache.write_text("\n".join(names))
@@ -141,11 +154,54 @@ def params(doc) -> list[dict]:
     # ⚠ SCOPED TO <inputs>, because <tests> carries <param> elements too -- and a test param has no
     # `type`, so an unscoped scan refuses every wrapper that HAS tests, for a reason that is false.
     for p in section.iter("param"):
-        if p.get("type") != "data":
-            raise Refusal(f"parameter `{p.get('name')}` is type={p.get('type')!r}; this converter "
-                          f"carries data inputs only, so port it by hand")
-        out.append({"name": p.get("name"), "format": p.get("format", "data"),
+        name = p.get("name") or (p.get("argument") or "").lstrip("-").replace("-", "_")
+        kind = p.get("type")
+        if kind in ("integer", "float"):
+            # ▶ A scalar with a default carries straight across: a UDT input of the same type, read
+            # as `$(inputs.<name>)`, its default as `value:` (Galaxy's YamlIntegerParameter; `default:` is
+            # rejected as an extra field). Only the two numeric types -- a select or boolean has semantics
+            # (options, truevalue/falsevalue) this converter would have to guess at.
+            value = p.get("value")
+            if value is None:
+                raise Refusal(f"parameter `{name}` is {kind} with no default; a UDT input needs one")
+            out.append({"name": name, "type": kind, "default": value,
+                        "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
+            continue
+        if kind != "data":
+            raise Refusal(f"parameter `{name}` is type={kind!r}; this converter carries data, "
+                          f"integer and float inputs only, so port it by hand")
+        out.append({"name": name, "type": "data", "format": p.get("format", "data"),
                     "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
+    return out
+
+
+def configfiles(doc) -> list[tuple[str, str]]:
+    """`[(name, text)]` for each <configfile>, which a UDT carries as a heredoc.
+
+    ⛔ WHY THIS EXISTS. Galaxy replaces every newline in <command> with a space before running it
+    (lib/galaxy/tools/evaluation.py, "Remove newlines from command line"), so a wrapper cannot keep
+    an inline script in its command; the idiom is a <configfile>. A UDT's shell_command keeps its
+    newlines, so the same text travels as `cat > <name>.cfg <<'DELIM'`.
+    ⛔ ONLY A CONFIGFILE WITH NO CHEETAH IN IT. A configfile is itself a Cheetah template; a `$name`
+    or `#if` inside one would need the same translation as the command, and a heredoc quoted with
+    'DELIM' would pass it through as a literal. So any `$` or directive is a refusal -- the wrapper
+    should hand its values to the script as argv instead.
+    """
+    node = doc.root.find("configfiles")
+    if node is None:
+        return []
+    out = []
+    for cf in node.iter("configfile"):
+        name, text = cf.get("name"), "".join(cf.itertext())
+        if "$" in text:
+            raise Refusal(f"configfile `{name}` contains `$`; pass values to it as argv so a UDT can "
+                          f"carry it verbatim")
+        if re.search(r"^\s*#(if|else|elif|end|for|set|silent|import|def)\b", text, re.M):
+            raise Refusal(f"configfile `{name}` uses a Cheetah directive")
+        delim = f"CONFIGFILE_{name.upper()}"
+        if re.search(rf"^{delim}$", text, re.M):
+            raise Refusal(f"configfile `{name}` contains its own heredoc delimiter {delim}")
+        out.append((name, text))
     return out
 
 
@@ -160,7 +216,8 @@ def outputs(doc) -> list[dict]:
     return out
 
 
-def translate(cmd: str, ins: list[dict], outs: list[dict]) -> tuple[str, dict[str, str]]:
+def translate(cmd: str, ins: list[dict], outs: list[dict],
+              cfgs: list[tuple[str, str]] = ()) -> tuple[str, dict[str, str]]:
     """Rewrite a `&&`-joined command into a shell_command, and name each output's work-dir file.
 
     ⚠ ONLY `&&`-JOINED LINES. Galaxy runs `<command>` through a shell that stops at the first
@@ -168,7 +225,9 @@ def translate(cmd: str, ins: list[dict], outs: list[dict]) -> tuple[str, dict[st
     chain becomes `set -e` plus one statement per line. Any other joiner (`;`, `|` at a line end,
     a bare newline between statements) changes what a failure does, so it is refused.
     """
-    body = cmd.strip()
+    # Galaxy drops Cheetah `##` comment lines before running a command; so does this, or they reach
+    # the UDT's script as shell comments that describe a template nobody renders.
+    body = "\n".join(ln for ln in cmd.strip().splitlines() if not ln.lstrip().startswith("##")).strip()
     if re.search(r";\s*$", body, re.M):
         raise Refusal("the command joins statements with `;`, which does not stop at a failure the "
                       "way the `&&` chain does; port it by hand")
@@ -176,20 +235,38 @@ def translate(cmd: str, ins: list[dict], outs: list[dict]) -> tuple[str, dict[st
     workfiles = {o["name"]: f"{o['name']}.dat" for o in outs}
     lines = []
     for s in stmts:
+        for name, _text in cfgs:
+            s = s.replace(f"'${name}'", f"{name}.cfg").replace(f"${name}", f"{name}.cfg")
         for i in ins:
-            s = s.replace(f"'${i['name']}'", f"'$(inputs.{i['name']}.path)'")
-            s = s.replace(f"${i['name']}", f"$(inputs.{i['name']}.path)")
+            ref = f"$(inputs.{i['name']}.path)" if i["type"] == "data" else f"$(inputs.{i['name']})"
+            s = s.replace(f"'${i['name']}'", f"'{ref}'")
+            s = s.replace(f"${i['name']}", ref)
         for o in outs:
             s = s.replace(f"'${o['name']}'", workfiles[o["name"]])
             s = s.replace(f"${o['name']}", workfiles[o["name"]])
         lines.append(s)
     joined = "\n".join(lines)
+    # The heredocs go FIRST and after translation, so neither the `&&` split nor the reference
+    # rewrite ever touches the script text.
+    heredocs = [f"cat > {name}.cfg <<'CONFIGFILE_{name.upper()}'\n{text.strip(chr(10))}\n"
+                f"CONFIGFILE_{name.upper()}" for name, text in cfgs]
     left = re.findall(r"\$\{?[A-Za-z_][\w.]*\}?", joined)
     left = [x for x in left if not x.startswith("$(") and x.strip("${}") not in PORTABLE_REFS]
     if left:
         raise Refusal(f"these references survived translation and would reach the shell as literals: "
                       f"{sorted(set(left))}")
-    return joined, workfiles
+    return "\n".join([*heredocs, joined]), workfiles
+
+
+def version_of(doc) -> str:
+    """The wrapper's own `version`, @TOKENS@ expanded -- e.g. `1.04.52+galaxy1`.
+
+    ⚠ A UDT cannot be updated, so re-registering a CHANGED tool at the SAME version leaves two
+    active registrations that nothing can tell apart. Carrying the wrapper's version makes a
+    changed wrapper a new version, and it is PEP 440, which usegalaxy.org requires of a UDT.
+    """
+    root = expanded_detection_root(doc)
+    return root.get("version") or "0.1.0"
 
 
 def clean_label(label: str, fallback: str) -> str:
@@ -201,14 +278,15 @@ def clean_label(label: str, fallback: str) -> str:
     """
     text = re.sub(r"\$\{[^}]*\}", "", label)
     text = text.split(":")[-1].strip(" :")
-    return text or fallback
+    return fallback if text.lower() in ("", "on", "of", "from") else text
 
 
 def yaml_block(text: str, indent: str) -> str:
     return "\n".join(indent + ln if ln.strip() else "" for ln in text.splitlines())
 
 
-def convert(xml: pathlib.Path, images: list[str]) -> tuple[str, str]:
+def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
+            wrapper_version: bool = False) -> tuple[str, str]:
     doc = load_tool(str(xml))
     reqs = requirements(doc)
     if len(reqs) != 1:
@@ -227,20 +305,21 @@ def convert(xml: pathlib.Path, images: list[str]) -> tuple[str, str]:
 
     cmd = command_text(doc)
     check_translatable(doc, cmd)
-    ins, outs = params(doc), outputs(doc)
-    shell, workfiles = translate(cmd, ins, outs)
+    ins, outs, cfgs = params(doc), outputs(doc), configfiles(doc)
+    shell, workfiles = translate(cmd, ins, outs, cfgs)
 
     tool_id = doc.root.get("id")
-    udt_id = "brc-" + re.sub(r"(?<!^)(?=[A-Z])", "-", tool_id).replace("_", "-").lower()
+    udt_id = id_prefix + re.sub(r"(?<!^)(?=[A-Z])", "-", tool_id).replace("_", "-").lower()
     desc = (doc.root.findtext("description") or "").strip()
     helpnode = doc.root.find("help")
     helptext = ("".join(helpnode.itertext()).strip() if helpnode is not None else "")
 
     macros = xml.parent / "macros.xml"
     prov = {
-        "source": str(xml).split("brc-tools-fork/")[-1],
+        "source": _repo_relative(xml),
         "tool_id": tool_id,
         "command_sha256": _sha(cmd),
+        **({f"configfile_{n}_sha256": _sha(t) for n, t in cfgs}),
         "requirements": f"{pkg}={version}",
         "macros_sha256": _sha(macros.read_text()) if macros.exists() else "(no macros.xml)",
         "container": container,
@@ -256,26 +335,35 @@ def convert(xml: pathlib.Path, images: list[str]) -> tuple[str, str]:
     doc_lines = head + [
         "class: GalaxyUserTool",
         f"id: {udt_id}",
-        'version: "0.1.0"',
-        f"name: {tool_id} (BRC UDT)",
-        f"description: {desc}" if desc else "",
+        f'version: "{version_of(doc) if wrapper_version else "0.1.0"}"',
+        f"name: {tool_id} ({'BRC ' if id_prefix == 'brc-' else ''}UDT)",
+        f"description: {json.dumps(desc)}" if desc else "",
         f"container: {container}",
         "shell_command: |",
         yaml_block("set -e\n" + shell, "  "),
         "inputs:",
     ]
     for i in ins:
-        doc_lines += [f"  - name: {i['name']}", f"    type: data", f"    format: {i['format']}"]
+        if i["type"] == "data":
+            doc_lines += [f"  - name: {i['name']}", "    type: data", f"    format: {i['format']}"]
+        elif float(i["default"]) == 0:
+            # ⛔ A ZERO DEFAULT FAILS GALAXY 26.1's UDT LINT ("TestsCaseValidation: Serious problem
+            # parsing tool source"), for 0, "0" and 0.0 alike, measured on laila 2026-09-27; 1 passes.
+            # So a zero default is declared OPTIONAL with no value, and an unset optional renders as
+            # the literal `null` -- the wrapper's command must read `null` as 0 (measured the same day).
+            doc_lines += [f"  - name: {i['name']}", f"    type: {i['type']}", "    optional: true"]
+        else:
+            doc_lines += [f"  - name: {i['name']}", f"    type: {i['type']}", f"    value: {i['default']}"]
         if i["label"]:
-            doc_lines.append(f"    label: {i['label']}")
+            doc_lines.append(f"    label: {json.dumps(i['label'])}")
         if i["help"]:
-            doc_lines.append(f"    help: {i['help']}")
+            doc_lines.append(f"    help: {json.dumps(i['help'])}")
     doc_lines.append("outputs:")
     for o in outs:
         doc_lines += [f"  - name: {o['name']}", f"    type: data", f"    format: {o['format']}",
                       f"    from_work_dir: {workfiles[o['name']]}"]
         if o["label"]:
-            doc_lines.append(f"    label: {clean_label(o['label'], o['name'])}")
+            doc_lines.append(f"    label: {json.dumps(clean_label(o['label'], o['name']))}")
     if helptext:
         doc_lines += ["help:", "  format: markdown", "  content: |",
                       yaml_block(helptext, "    ")]
@@ -287,6 +375,10 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("xml", nargs="+", type=pathlib.Path)
     ap.add_argument("--out", type=pathlib.Path, help="write <id>.gxtool.yml here (default: stdout)")
+    ap.add_argument("--id-prefix", default="brc-",
+                    help="UDT id prefix; `brc-` for this repo's wrappers, another for a sibling repo's")
+    ap.add_argument("--wrapper-version", action="store_true",
+                    help="version the UDT as the wrapper is versioned, instead of 0.1.0")
     ap.add_argument("--depot-cache", type=pathlib.Path,
                     help="file holding a cached depot listing (written if absent)")
     a = ap.parse_args()
@@ -295,7 +387,7 @@ def main() -> int:
     rc = 0
     for xml in a.xml:
         try:
-            udt_id, text = convert(xml, images)
+            udt_id, text = convert(xml, images, a.id_prefix, a.wrapper_version)
         except Refusal as e:
             print(f"REFUSING {xml}: {e}", file=sys.stderr)
             rc = 1
@@ -303,7 +395,7 @@ def main() -> int:
         if a.out:
             # named for the UDT id, not the directory, so `udt/` reads as one set:
             # brc-chain-stitch-id -> chain_stitch_id.gxtool.yml
-            path = a.out / (udt_id.removeprefix("brc-").replace("-", "_") + ".gxtool.yml")
+            path = a.out / (udt_id.removeprefix(a.id_prefix).replace("-", "_") + ".gxtool.yml")
             path.write_text(text)
             print(f"wrote {path} ({udt_id})")
         else:
