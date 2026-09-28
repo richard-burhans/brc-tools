@@ -49,7 +49,7 @@ from galaxy_tool_source.binding import load_tool
 from galaxy_tool_source.cheetah_refs import tool_cheetah_references
 from galaxy_tool_source.macros import expanded_detection_root
 
-CONVERTER_VERSION = "0.2.0"
+CONVERTER_VERSION = "0.3.0"
 DEPOT = "https://depot.galaxyproject.org/singularity/"
 
 #: References a converted command may still contain. Everything else is a refusal, because the
@@ -167,10 +167,30 @@ def params(doc) -> list[dict]:
             out.append({"name": name, "type": kind, "default": value,
                         "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
             continue
+        if kind == "text":
+            # ▶ A text input carries across as a UDT text, read as `$(inputs.<name>)`. Its validators do
+            # not: the wrapper's script must check the value itself, as it would for any argv.
+            out.append({"name": name, "type": "text", "default": p.get("value", ""),
+                        "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
+            continue
+        if kind == "select":
+            # ▶ A single select carries across as a UDT select, read as `$(inputs.<name>)`: its value
+            # is the option's value, as Cheetah renders it. A multiple select would be a list.
+            if p.get("multiple") == "true":
+                raise Refusal(f"parameter `{name}` is a multiple select; port it by hand")
+            opts = [(o.get("value", ""), "".join(o.itertext()).strip()) for o in p.iter("option")]
+            if not opts:
+                raise Refusal(f"parameter `{name}` is a select with no static options")
+            default = next((v for v, _ in ((o.get("value", ""), o) for o in p.iter("option"))
+                            if _.get("selected") == "true"), opts[0][0])
+            out.append({"name": name, "type": "select", "options": opts, "default": default,
+                        "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
+            continue
         if kind != "data":
             raise Refusal(f"parameter `{name}` is type={kind!r}; this converter carries data, "
-                          f"integer and float inputs only, so port it by hand")
+                          f"text, select, integer and float inputs only, so port it by hand")
         out.append({"name": name, "type": "data", "format": p.get("format", "data"),
+                    "multiple": p.get("multiple") == "true",
                     "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
     return out
 
@@ -193,11 +213,24 @@ def configfiles(doc) -> list[tuple[str, str]]:
     out = []
     for cf in node.iter("configfile"):
         name, text = cf.get("name"), "".join(cf.itertext())
-        if "$" in text:
-            raise Refusal(f"configfile `{name}` contains `$`; pass values to it as argv so a UDT can "
-                          f"carry it verbatim")
+        # ▶ `\$` and `\#` are Cheetah's escapes for a literal `$` and `#` -- how a POSIX sh script,
+        # which cannot avoid `$`, lives in a configfile. They render as `$` and `#`, so they carry
+        # across; an UNESCAPED `$` is a Cheetah reference and still a refusal.
+        if re.search(r"(?<!\\)\$", text):
+            raise Refusal(f"configfile `{name}` contains an unescaped `$` (a Cheetah reference); pass "
+                          f"values to it as argv, and write the shell's own `$` as `\\$`")
         if re.search(r"^\s*#(if|else|elif|end|for|set|silent|import|def)\b", text, re.M):
             raise Refusal(f"configfile `{name}` uses a Cheetah directive")
+        if re.search(r"^\s*##", text, re.M):
+            raise Refusal(f"configfile `{name}` has a `##` line, which Cheetah drops as a comment; "
+                          f"escape it as `\\#\\#` if it is meant to reach the script")
+        text = text.replace("\\$", "$").replace("\\#", "#")
+        # ⛔ `$(` IS GALAXY'S UDT EXPRESSION SYNTAX. A shell command substitution written `$( ... )` in
+        # the script is evaluated as JavaScript when the job is built, and the job fails with no command
+        # line and no stderr (measured on laila 26.1, 2026-09-28: gt-multiz-roast). Backticks are safe.
+        if "$(" in text:
+            raise Refusal(f"configfile `{name}` uses `$( ... )`, which a UDT evaluates as a JavaScript "
+                          f"expression; write the shell command substitution with backticks")
         delim = f"CONFIGFILE_{name.upper()}"
         if re.search(rf"^{delim}$", text, re.M):
             raise Refusal(f"configfile `{name}` contains its own heredoc delimiter {delim}")
@@ -210,9 +243,25 @@ def outputs(doc) -> list[dict]:
     section = doc.root.find("outputs")
     if section is None:
         raise Refusal("the wrapper has no <outputs>")
-    for d in section.iter("data"):
-        out.append({"name": d.get("name"), "format": d.get("format", "data"),
-                    "label": d.get("label", "")})
+    for d in section:
+        if d.tag == "data":
+            out.append({"name": d.get("name"), "format": d.get("format", "data"),
+                        "label": d.get("label", "")})
+        elif d.tag == "collection":
+            # ▶ A list discovered by one filename pattern carries across as a UDT collection output
+            # (measured working on .org 26.1, 2026-09-08). Anything richer is refused, never dropped:
+            # skipping an output the converter cannot read would register a tool with one fewer output.
+            disc = list(d.iter("discover_datasets"))
+            if d.get("type") != "list" or len(disc) != 1 or not disc[0].get("pattern"):
+                raise Refusal(f"output collection `{d.get('name')}` is not a list with one "
+                              f"discover_datasets pattern; port it by hand")
+            dd = disc[0]
+            out.append({"name": d.get("name"), "collection": True, "label": d.get("label", ""),
+                        "pattern": dd.get("pattern"), "directory": dd.get("directory"),
+                        "format": dd.get("format") or dd.get("ext") or "data",
+                        "sort_by": dd.get("sort_by", "filename")})
+        else:
+            raise Refusal(f"output element <{d.tag}> is not carried; port it by hand")
     return out
 
 
@@ -232,16 +281,26 @@ def translate(cmd: str, ins: list[dict], outs: list[dict],
         raise Refusal("the command joins statements with `;`, which does not stop at a failure the "
                       "way the `&&` chain does; port it by hand")
     stmts = [s.strip() for s in re.split(r"&&\s*\n?", body) if s.strip()]
-    workfiles = {o["name"]: f"{o['name']}.dat" for o in outs}
+    workfiles = {o["name"]: f"{o['name']}.dat" for o in outs if not o.get("collection")}
     lines = []
     for s in stmts:
         for name, _text in cfgs:
             s = s.replace(f"'${name}'", f"{name}.cfg").replace(f"${name}", f"{name}.cfg")
         for i in ins:
-            ref = f"$(inputs.{i['name']}.path)" if i["type"] == "data" else f"$(inputs.{i['name']})"
+            if i["type"] == "data" and i.get("multiple"):
+                # ▶ Cheetah renders a multiple data input as its paths joined by commas; a UDT gets a
+                # list, and only a JavaScript expression walks it. Measured on laila 26.1 2026-09-28:
+                # `.map(...)` works, an indexed `[0].path` does not, and element_identifier is undefined.
+                ref = f"$(inputs.{i['name']}.map(function(e){{ return e.path; }}).join(','))"
+            elif i["type"] == "data":
+                ref = f"$(inputs.{i['name']}.path)"
+            else:
+                ref = f"$(inputs.{i['name']})"
             s = s.replace(f"'${i['name']}'", f"'{ref}'")
             s = s.replace(f"${i['name']}", ref)
         for o in outs:
+            if o.get("collection"):
+                continue
             s = s.replace(f"'${o['name']}'", workfiles[o["name"]])
             s = s.replace(f"${o['name']}", workfiles[o["name"]])
         lines.append(s)
@@ -325,6 +384,15 @@ def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
         "container": container,
         "converter": f"scripts/udt_convert.py {CONVERTER_VERSION}",
     }
+    # ⚠ A UDT OUTPUT HAS ONE FORMAT. A wrapper's <change_format> cannot be carried, and dropping it
+    # silently would mislabel some runs' output, so it is recorded here and printed.
+    outs_node = doc.root.find("outputs")
+    changed = ([d.get("name") for d in outs_node if d.find("change_format") is not None]
+               if outs_node is not None else [])
+    if changed:
+        prov["change_format_dropped"] = ", ".join(changed)
+        print(f"WARNING {xml}: <change_format> on {changed} is not carried; the UDT's output always has "
+              f"the declared format", file=sys.stderr)
     head = ["# ⛔ GENERATED by scripts/udt_convert.py (fork-side) -- do not hand-edit.",
             "# Edit the wrapper under tools/ and regenerate. The stamp below is what",
             "# scripts/check_udt_provenance.py verifies, using the standard library only.",
@@ -346,6 +414,18 @@ def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
     for i in ins:
         if i["type"] == "data":
             doc_lines += [f"  - name: {i['name']}", "    type: data", f"    format: {i['format']}"]
+            if i.get("multiple"):
+                doc_lines.append("    multiple: true")
+        elif i["type"] == "text":
+            doc_lines += [f"  - name: {i['name']}", "    type: text", f"    value: {json.dumps(i['default'])}"]
+        elif i["type"] == "select":
+            # ⚠ The default is the option marked `selected: true`; a select has no `value:` key and
+            # /api/unprivileged_tools refuses one as extra_forbidden (laila 26.1, 2026-09-28).
+            doc_lines += [f"  - name: {i['name']}", "    type: select", "    options:"]
+            for value, label in i["options"]:
+                doc_lines += [f"      - label: {json.dumps(label)}", f"        value: {json.dumps(value)}"]
+                if value == i["default"]:
+                    doc_lines.append("        selected: true")
         elif float(i["default"]) == 0:
             # ⛔ A ZERO DEFAULT FAILS GALAXY 26.1's UDT LINT ("TestsCaseValidation: Serious problem
             # parsing tool source"), for 0, "0" and 0.0 alike, measured on laila 2026-09-27; 1 passes.
@@ -360,6 +440,17 @@ def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
             doc_lines.append(f"    help: {json.dumps(i['help'])}")
     doc_lines.append("outputs:")
     for o in outs:
+        if o.get("collection"):
+            doc_lines += [f"  - name: {o['name']}", "    type: collection", "    collection_type: list",
+                          "    discover_datasets:", "      - discover_via: pattern",
+                          f"        pattern: {json.dumps(o['pattern'])}",
+                          f"        format: {o['format']}", "        visible: false",
+                          f"        sort_key: {json.dumps(o['sort_by'])}"]
+            if o["directory"]:
+                doc_lines.append(f"        directory: {json.dumps(o['directory'])}")
+            if o["label"]:
+                doc_lines.append(f"    label: {json.dumps(clean_label(o['label'], o['name']))}")
+            continue
         doc_lines += [f"  - name: {o['name']}", f"    type: data", f"    format: {o['format']}",
                       f"    from_work_dir: {workfiles[o['name']]}"]
         if o["label"]:
