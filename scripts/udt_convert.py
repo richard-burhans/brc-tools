@@ -291,7 +291,13 @@ def translate(cmd: str, ins: list[dict], outs: list[dict],
                 # ▶ Cheetah renders a multiple data input as its paths joined by commas; a UDT gets a
                 # list, and only a JavaScript expression walks it. Measured on laila 26.1 2026-09-28:
                 # `.map(...)` works, an indexed `[0].path` does not, and element_identifier is undefined.
-                ref = f"$(inputs.{i['name']}.map(function(e){{ return e.path; }}).join(','))"
+                # ⛔ TWO SHAPES, AND ONE OF THEM RENDERED AS '' WITH NO ERROR. A direct run passes a list of
+                # files; a workflow mapping over a nested list passes a list holding ONE object keyed by
+                # element identifier ({"tupChi1": {File}, ...}), so `.map(e => e.path)` gave [undefined] and
+                # roast ran on nothing (laila, growler_multiz, 2026-09-29). Both are flattened here.
+                ref = (f"$(inputs.{i['name']}.reduce(function(a, x){{ return a.concat(x && x.path ? [x] : "
+                       f"Object.keys(x).map(function(k){{ return x[k]; }})); }}, [])"
+                       f".map(function(e){{ return e.path; }}).join(','))")
             elif i["type"] == "data":
                 ref = f"$(inputs.{i['name']}.path)"
             else:
