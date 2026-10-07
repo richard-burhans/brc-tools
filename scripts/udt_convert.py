@@ -54,7 +54,13 @@ DEPOT = "https://depot.galaxyproject.org/singularity/"
 
 #: References a converted command may still contain. Everything else is a refusal, because the
 #: point of the reference model is to enumerate what is there rather than to hope.
-PORTABLE_REFS = {"tool.name", "on_string"}
+PORTABLE_REFS = {"tool.name", "on_string", "GALAXY_SLOTS"}
+
+#: ⛔ `${NAME}` IS FATAL IN A UDT shell_command AND `$NAME` WORKS -- measured, not inferred. So a
+#: wrapper's idiomatic `\${GALAXY_SLOTS:-N}` cannot travel as written: the braces have to go, and
+#: the `:-N` fallback with them. ⚠ That is only safe because GALAXY_SLOTS IS exported to a UDT job
+#: (measured =1), so dropping the default cannot leave an empty argument behind.
+SLOTS_FORMS = re.compile(r"\$\{GALAXY_SLOTS(?::-\s*\d+)?\}")
 
 
 class Refusal(Exception):
@@ -136,6 +142,10 @@ def check_translatable(doc, cmd: str) -> list[str]:
         raw = ref.name.strip("${}")
         if raw in PORTABLE_REFS:
             continue
+        if raw == "__tool_directory__":
+            # ▶ Allowed here and resolved later by `tool_dir_helpers`, which refuses any use that
+            # is not `$__tool_directory__/<file>` with that file present.
+            continue
         if raw.startswith("__"):
             raise Refusal(f"the command reads `{ref.name}`; a container has no directory beside the "
                           f"wrapper, so the helper it names would not exist at run time")
@@ -144,6 +154,46 @@ def check_translatable(doc, cmd: str) -> list[str]:
                           f"not reach it by any route -- restructure the tool to run per element")
         names.append(raw.split(".")[0])
     return names
+
+
+#: `$__tool_directory__/<file>` -- the only form of that reference a UDT can carry.
+TOOL_DIR_HELPER = re.compile(r"\$__tool_directory__/([\w.\-]+)")
+
+
+def helper_delim(fname: str) -> str:
+    """The heredoc delimiter for an inlined helper. One definition, used by the check and the
+    emitter, so they can never disagree about what would terminate the body early."""
+    return "TOOLDIR_" + re.sub(r"[^A-Z0-9]", "_", fname.upper())
+
+
+def tool_dir_helpers(cmd: str, xml: pathlib.Path) -> list[tuple[str, str]]:
+    """`[(filename, text)]` for each helper the command runs from beside the wrapper.
+
+    ▶ A UDT HAS NO DIRECTORY, SO THE HELPER TRAVELS INSIDE IT. The wrapper's idiom is
+    `python '$__tool_directory__/x.py'`; a container has no x.py beside it, which is why this was
+    a flat refusal. But the converter already carries a <configfile> as a quoted heredoc, and a
+    helper script is the same problem: text that must exist as a file before the command runs. So
+    it is read from beside the XML and emitted the same way. The repo's hand-written UDTs for
+    these tools do exactly this by hand.
+
+    ⛔ ONLY THE `/<file>` FORM. A bare `$__tool_directory__`, or one joined to a glob or a
+    subdirectory, is still refused: there is nothing to enumerate, and inlining "whatever is in
+    that directory" would quietly change what the tool runs.
+    """
+    out = []
+    for fname in dict.fromkeys(TOOL_DIR_HELPER.findall(cmd)):
+        helper = xml.parent / fname
+        if not helper.is_file():
+            raise Refusal(f"the command runs `$__tool_directory__/{fname}` and no such file sits "
+                          f"beside the wrapper, so there is nothing to carry into the UDT")
+        text = helper.read_text()
+        # ⛔ The heredoc is quoted, so the body passes through literally -- but a line equal to the
+        # delimiter would end it early and silently truncate the script.
+        delim = helper_delim(fname)
+        if any(ln.strip() == delim for ln in text.splitlines()):
+            raise Refusal(f"{fname} contains a line equal to its heredoc delimiter {delim}")
+        out.append((fname, text))
+    return out
 
 
 def params(doc) -> list[dict]:
@@ -184,6 +234,26 @@ def params(doc) -> list[dict]:
             default = next((v for v, _ in ((o.get("value", ""), o) for o in p.iter("option"))
                             if _.get("selected") == "true"), opts[0][0])
             out.append({"name": name, "type": "select", "options": opts, "default": default,
+                        "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
+            continue
+        if kind == "boolean":
+            # ▶ A UDT CARRIES A BOOLEAN, BUT NOT GALAXY'S SEMANTICS FOR ONE. Galaxy renders `$flag`
+            # as its truevalue/falsevalue; a UDT's `$(inputs.flag)` is evaluated as ECMAScript and
+            # yields the bare lowercase `true`/`false` (measured on usegalaxy.org 26.1 -- see
+            # fasta_uppercase.gxtool.yml, the first UDT in the repo to carry one). So the flag has
+            # to travel in a TERNARY, which `translate` builds; this only records the two values.
+            tv, fv = p.get("truevalue", ""), p.get("falsevalue", "")
+            # ⛔ THE TERNARY IS BUILT BY STRING CONCATENATION, so a value holding a quote, a
+            # backslash or a `$` would either break the expression or smuggle a second
+            # substitution into it. Refuse rather than escape: the escaping rules differ between
+            # Galaxy's evaluator and the shell, and getting them subtly wrong is silent.
+            for val, which in ((tv, "truevalue"), (fv, "falsevalue")):
+                if any(c in val for c in "'\"$`"):
+                    raise Refusal(f"parameter `{name}` has {which}={val!r}, which holds a quote, "
+                                  f"backslash, `$` or backtick; the UDT ternary is built by "
+                                  f"concatenation, so port this one by hand")
+            out.append({"name": name, "type": "boolean", "truevalue": tv, "falsevalue": fv,
+                        "default": p.get("checked", "false") == "true",
                         "label": p.get("label", ""), "help": (p.get("help", "") or "").strip()})
             continue
         if kind != "data":
@@ -244,6 +314,12 @@ def outputs(doc) -> list[dict]:
     if section is None:
         raise Refusal("the wrapper has no <outputs>")
     for d in section:
+        # ⛔ A COMMENT IS A CHILD TOO. ElementTree yields comment nodes from an iteration over
+        # children, and their `.tag` is a FUNCTION, not a string -- so a wrapper that documents
+        # its outputs with an XML comment was refused for having an "output element
+        # <cyfunction Comment ...>", which names nothing a reader can act on.
+        if not isinstance(d.tag, str):
+            continue
         if d.tag == "data":
             out.append({"name": d.get("name"), "format": d.get("format", "data"),
                         "label": d.get("label", "")})
@@ -266,7 +342,8 @@ def outputs(doc) -> list[dict]:
 
 
 def translate(cmd: str, ins: list[dict], outs: list[dict],
-              cfgs: list[tuple[str, str]] = ()) -> tuple[str, dict[str, str]]:
+              cfgs: list[tuple[str, str]] = (),
+              helpers: list[tuple[str, str]] = ()) -> tuple[str, dict[str, str]]:
     """Rewrite a `&&`-joined command into a shell_command, and name each output's work-dir file.
 
     ⚠ ONLY `&&`-JOINED LINES. Galaxy runs `<command>` through a shell that stops at the first
@@ -300,6 +377,19 @@ def translate(cmd: str, ins: list[dict], outs: list[dict],
                        f".map(function(e){{ return e.path; }}).join(','))")
             elif i["type"] == "data":
                 ref = f"$(inputs.{i['name']}.path)"
+            elif i["type"] == "boolean":
+                # ⛔ A QUOTED BOOLEAN WOULD PASS AN EMPTY ARGUMENT, NOT NO ARGUMENT. `'$flag'`
+                # becomes `''` when the flag is off, and a program receiving one empty argv entry
+                # is not the same as receiving none -- several of these tools would read it as an
+                # empty positional. Galaxy's own renderer has the same shape, so this is a
+                # pre-existing hazard in the wrapper; refuse rather than carry it across silently.
+                if f"'${i['name']}'" in s:
+                    raise Refusal(f"the command quotes `${i['name']}`, a boolean; when it is off "
+                                  f"that renders as an empty argument rather than none. Unquote it "
+                                  f"in the wrapper (a flag needs no quoting) and convert again")
+                # ⚠ DOUBLE quotes inside the ternary, so it survives being embedded anywhere the
+                # command already uses single quotes.
+                ref = (f'$(inputs.{i["name"]} ? "{i["truevalue"]}" : "{i["falsevalue"]}")')
             else:
                 ref = f"$(inputs.{i['name']})"
             s = s.replace(f"'${i['name']}'", f"'{ref}'")
@@ -311,10 +401,21 @@ def translate(cmd: str, ins: list[dict], outs: list[dict],
             s = s.replace(f"${o['name']}", workfiles[o["name"]])
         lines.append(s)
     joined = "\n".join(lines)
+    # ▶ The braced GALAXY_SLOTS forms collapse to the bare one BEFORE the surviving-reference
+    # check, which is what lets a wrapper keep writing the Galaxy idiom while the UDT gets the
+    # only form that works there.
+    joined = SLOTS_FORMS.sub("$GALAXY_SLOTS", joined)
+    # ▶ The helper now sits in the working directory, so its reference becomes a plain relative
+    # path. Done after the `&&` split, so the rewrite never reaches into a heredoc body.
+    joined = TOOL_DIR_HELPER.sub(r"\1", joined)
     # The heredocs go FIRST and after translation, so neither the `&&` split nor the reference
     # rewrite ever touches the script text.
     heredocs = [f"cat > {name}.cfg <<'CONFIGFILE_{name.upper()}'\n{text.strip(chr(10))}\n"
                 f"CONFIGFILE_{name.upper()}" for name, text in cfgs]
+    # ⚠ Helpers go in the SAME place and for the same reason as a configfile: a file the command
+    # needs to exist before it runs. Emitted BEFORE them, so a helper can never depend on one.
+    heredocs = [f"cat > {fname} <<'{helper_delim(fname)}'\n{text.rstrip(chr(10))}\n"
+                f"{helper_delim(fname)}" for fname, text in helpers] + heredocs
     left = re.findall(r"\$\{?[A-Za-z_][\w.]*\}?", joined)
     left = [x for x in left if not x.startswith("$(") and x.strip("${}") not in PORTABLE_REFS]
     if left:
@@ -351,7 +452,7 @@ def yaml_block(text: str, indent: str) -> str:
 
 
 def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
-            wrapper_version: bool = False) -> tuple[str, str]:
+            wrapper_version: bool = False, base_image: str = "") -> tuple[str, str]:
     doc = load_tool(str(xml))
     reqs = requirements(doc)
     if len(reqs) != 1:
@@ -364,14 +465,29 @@ def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
                 f"gets ONE container. The mulled name IS derivable: {name.split(':')[0]} -- "
                 + ("it is published, pin it by hand" if published else
                    "it is NOT published; register it (planemo container_register) or split the tool"))
-        raise Refusal("the wrapper declares no conda requirement, so there is no image to resolve")
-    pkg, version = reqs[0]
-    container = resolve_container(pkg, version, images)
+        if not reqs and base_image:
+            # ▶ A WRAPPER WITH NO REQUIREMENT STILL NEEDS AN IMAGE, AND ONLY THE OPERATOR KNOWS
+            # WHICH. These are the pure-script tools: they declare no package because they need
+            # none, so there is nothing to derive a container from. The repo's hand-written UDTs
+            # for exactly these tools all pin `quay.io/biocontainers/python:3.12`, but that is a
+            # CHOICE about which interpreter the script is run under, not a fact about the
+            # wrapper. ⛔ So it is named on the command line and never defaulted: guessing an
+            # interpreter version for someone else's script is how a tool runs under 3.12 and
+            # breaks under 3.13 with nothing recording the decision.
+            container = base_image
+            pkg, version = "", ""
+        else:
+            raise Refusal("the wrapper declares no conda requirement, so there is no image to "
+                          "resolve; pass --base-image to name one (the repo's hand-written UDTs "
+                          "for script-only tools use quay.io/biocontainers/python:3.12)")
+    if reqs:
+        pkg, version = reqs[0]
+        container = resolve_container(pkg, version, images)
 
     cmd = command_text(doc)
     check_translatable(doc, cmd)
     ins, outs, cfgs = params(doc), outputs(doc), configfiles(doc)
-    shell, workfiles = translate(cmd, ins, outs, cfgs)
+    shell, workfiles = translate(cmd, ins, outs, cfgs, tool_dir_helpers(cmd, xml))
 
     tool_id = doc.root.get("id")
     udt_id = id_prefix + re.sub(r"(?<!^)(?=[A-Z])", "-", tool_id).replace("_", "-").lower()
@@ -432,6 +548,12 @@ def convert(xml: pathlib.Path, images: list[str], id_prefix: str = "brc-",
                 doc_lines += [f"      - label: {json.dumps(label)}", f"        value: {json.dumps(value)}"]
                 if value == i["default"]:
                     doc_lines.append("        selected: true")
+        elif i["type"] == "boolean":
+            # ⚠ BEFORE the zero-default branch below: `float(False)` is 0.0, so an unchecked
+            # boolean would otherwise be declared `optional: true` with no value and render as
+            # `null`, and `null ? a : b` takes the FALSE arm by accident rather than by design.
+            doc_lines += [f"  - name: {i['name']}", "    type: boolean",
+                          f"    value: {'true' if i['default'] else 'false'}"]
         elif float(i["default"]) == 0:
             # ⛔ A ZERO DEFAULT FAILS GALAXY 26.1's UDT LINT ("TestsCaseValidation: Serious problem
             # parsing tool source"), for 0, "0" and 0.0 alike, measured on laila 2026-09-27; 1 passes.
@@ -476,6 +598,11 @@ def main() -> int:
                     help="UDT id prefix; `brc-` for this repo's wrappers, another for a sibling repo's")
     ap.add_argument("--wrapper-version", action="store_true",
                     help="version the UDT as the wrapper is versioned, instead of 0.1.0")
+    ap.add_argument("--base-image", default="",
+                    help="container for a wrapper that declares NO conda requirement (the "
+                         "script-only tools). Never defaulted: which interpreter the script runs "
+                         "under is a decision, not a fact about the wrapper. The repo's "
+                         "hand-written UDTs for these use quay.io/biocontainers/python:3.12")
     ap.add_argument("--depot-cache", type=pathlib.Path,
                     help="file holding a cached depot listing (written if absent)")
     a = ap.parse_args()
@@ -484,7 +611,7 @@ def main() -> int:
     rc = 0
     for xml in a.xml:
         try:
-            udt_id, text = convert(xml, images, a.id_prefix, a.wrapper_version)
+            udt_id, text = convert(xml, images, a.id_prefix, a.wrapper_version, a.base_image)
         except Refusal as e:
             print(f"REFUSING {xml}: {e}", file=sys.stderr)
             rc = 1
