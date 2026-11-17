@@ -29,19 +29,19 @@
       element_tests:
         cs10_A:
           asserts:
-            - has_n_lines: {n: 802}
+            - has_n_lines: {n: 670}
             - has_line: {line: ">cs10_12000001_12020000"}
             - has_line: {line: ">cs10_28000001_28020000"}
             # Lower-case in the input; only the dustmasker polyC run stays masked.
-            - has_line: {line: "TCGGTTATATAGACCCATGGTcccccccACTAATTCAGATAATATTACTT"}
+            - has_line: {line: "TATTGGAAGCTCGGTTATATAGACCCATGGTcccccccACTAATTCAGATAATATTACTT"}
             - has_text_matching: {expression: "[acgt]{20}"}
         cs10_B:
           asserts:
-            - has_n_lines: {n: 401}
+            - has_n_lines: {n: 335}
             - has_line: {line: ">cs10_57000001_57020000"}
-            - has_line: {line: "AAATTAattaatttaattaTGATATTTAGAATTGAAATAggaataGTaaa"}
+            - has_line: {line: "AAATTAattaatttaattaTGATATTTAGAATTGAAATAggaataGTaaatatctaaata"}
             # Lower-case in the input and outside every interval: upper-cased.
-            - has_line: {line: "CACTTGGTTTTTGCAGTTTTCACAATTTTTATTTCTATTTTCTCAAAAAC"}
+            - has_line: {line: "TAATGGGCCCCACTTGGTTTTTGCAGTTTTCACAATTTTTATTTCTATTTTCTCAAAAAC"}
     Soft-masked assembly index:
       class: Collection
       element_count: 2
@@ -49,12 +49,12 @@
         cs10_A:
           asserts:
             - has_n_lines: {n: 2}
-            - has_line: {line: "cs10_12000001_12020000\t20000\t24\t50\t51"}
-            - has_line: {line: "cs10_28000001_28020000\t20000\t20448\t50\t51"}
+            - has_line: {line: "cs10_12000001_12020000\t20000\t24\t60\t61"}
+            - has_line: {line: "cs10_28000001_28020000\t20000\t20382\t60\t61"}
         cs10_B:
           asserts:
             - has_n_lines: {n: 1}
-            - has_line: {line: "cs10_57000001_57020000\t20000\t24\t50\t51"}
+            - has_line: {line: "cs10_57000001_57020000\t20000\t24\t60\t61"}
     dustmasker intervals:
       class: Collection
       element_count: 2

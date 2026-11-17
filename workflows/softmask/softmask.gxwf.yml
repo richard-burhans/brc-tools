@@ -69,17 +69,18 @@ steps:
     tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/seqtk/seqtk_seq/1.5+galaxy2
     label: uppercase
     doc: >-
-      Remove any soft-masking that the assembly already has (seqtk seq -U). Thus the
-      output of this workflow carries the mask of this workflow and nothing else. Each
-      masker already upper-cases its own working copy, so the BED tracks are de novo.
-      maskfasta does not upper-case its input, and this step fixes that.
+      Remove any soft-masking that the assembly already has (seqtk seq -U), and wrap
+      the sequence at 60 bases (-l 60). Thus the output of this workflow carries the mask
+      of this workflow and nothing else. Each masker already upper-cases its own working
+      copy, so the BED tracks are de novo. maskfasta does not upper-case its input, and
+      this step fixes that.
     in:
       in_file: Genome assemblies
     state:
       q: 0
       X: 255
       n: ''
-      l: 0
+      l: 60
       Q: 33
       s: 11
       f: 1.0
