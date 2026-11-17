@@ -47,14 +47,11 @@ outputs:
     outputSource: masking_table/output
     doc: >-
       Sample x masker table of % genome masked (one row per strain, one column
-      per tool + union), from bedtools genomecov pivoted by masking_table. Feeds MultiQC.
-  masking_report:
-    outputSource: masking_multiqc/html_report
-    doc: MultiQC report of per-strain soft-masking proportions per tool (custom-content table).
+      per tool + union), from bedtools genomecov pivoted by masking_table.
 
 steps:
   uppercase:
-    tool_id: fasta_uppercase
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/fasta_uppercase/fasta_uppercase/1.0.0+galaxy0
     label: uppercase
     doc: >-
       Strip any soft-masking the assembly arrived with, so this workflow's output carries this
@@ -64,7 +61,7 @@ steps:
       input: assemblies
     position: {top: 170, left: 150}
   dustmasker:
-    tool_id: dustmasker
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/dustmasker/dustmasker/2.17.0+galaxy0
     label: dustmasker
     doc: NCBI DUST low-complexity -> content-annotated BED6. Maps over assemblies.
     in:
@@ -82,7 +79,7 @@ steps:
         action_type: TagDatasetAction
         output_name: output
   windowmasker:
-    tool_id: windowmasker
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/windowmasker/windowmasker/2.17.0+galaxy0
     label: windowmasker
     doc: NCBI WindowMasker genome-frequency repeats -> BED6. Maps over assemblies.
     in:
@@ -100,7 +97,7 @@ steps:
         action_type: TagDatasetAction
         output_name: output
   tantan:
-    tool_id: tantan
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/tantan/tantan/51+galaxy0
     label: tantan
     doc: tantan gentle low-complexity -> BED6. Maps over assemblies.
     in:
@@ -118,7 +115,7 @@ steps:
         action_type: TagDatasetAction
         output_name: output
   fastan:
-    tool_id: fastan
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/fastan/fastan/0.8+galaxy0
     label: fastan
     doc: FASTAN tandem arrays -> BED6. Maps over assemblies.
     in:
@@ -155,25 +152,54 @@ steps:
             __class__: ConnectedValue
         - input2:
             __class__: ConnectedValue
+  faidx_ref:
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/samtools_faidx/samtools_faidx/1.22+galaxy1
+    label: faidx_ref
+    doc: Index the upper-cased FASTA (.fai) to supply contig sizes to sort_bed and genomecov.
+    in:
+      input: uppercase/output
+    position: {top: 420, left: 300}
+  sizes_cut:
+    tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/text_processing/tp_cut_tool/9.11+galaxy0
+    label: sizes_cut
+    doc: chrom<TAB>length from each upper-cased .fai (the bedtools genome file). Maps over faidx_ref.
+    in:
+      input: faidx_ref/output
+    state:
+      complement: ""
+      cut_type_options:
+        cut_element: "-f"
+        delimiter: ""
+        colnames_option:
+          header: "N"
+          list: "1,2"
+    position: {top: 420, left: 650}
   sort_bed:
-    tool_id: bedtools_sortbed
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_sortbed/2.31.1+galaxy0
     label: sort_bed
     doc: Sort the concatenated intervals (required before merge). IUC bedtools.
     in:
       input: union_cat/out_file1
+      genome_file_opts|genome: sizes_cut/output
     state:
+      option: ''
       genome_file_opts:
         genome_file_opts_selector: hist
     position: {top: 420, left: 950}
   merge_bed:
-    tool_id: bedtools_mergebed
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_mergebed/2.31.1+galaxy2
     label: merge_bed
     doc: Merge/union overlapping intervals across all four maskers. IUC bedtools.
     in:
       input: sort_bed/output
+    state:
+      strand: ''
+      distance: 0
+      header: false
+      c_and_o_argument_repeat: []
     position: {top: 420, left: 1250}
   maskfasta:
-    tool_id: bedtools_maskfastabed
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_maskfastabed/2.31.1
     label: maskfasta
     doc: >-
       Soft-mask the UPPER-CASED assembly at the merged union intervals (-soft). IUC bedtools.
@@ -186,6 +212,8 @@ steps:
       input: merge_bed/output
     state:
       soft: true
+      mc: 'N'
+      fullheader: false
     position: {top: 270, left: 1600}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -199,7 +227,7 @@ steps:
         action_type: TagDatasetAction
         output_name: output
   faidx:
-    tool_id: samtools_faidx
+    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/samtools_faidx/samtools_faidx/1.22+galaxy1
     label: faidx
     doc: Index the soft-masked FASTA (.fai). IUC samtools_faidx.
     in:
@@ -216,23 +244,13 @@ steps:
           tags: Softmaskedfai
         action_type: TagDatasetAction
         output_name: output
-  sizes_cut:
-    tool_id: Cut1
-    label: sizes_cut
-    doc: chrom<TAB>length from each softmasked .fai (the bedtools genome file). Maps over faidx.
-    in:
-      input: faidx/output
-    state:
-      columnList: "c1,c2"
-      delimiter: "T"
-    position: {top: 270, left: 2200}
   gcov_dust:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
     label: gcov_dust
     doc: Genome coverage histogram (max depth 1) of dustmasker intervals; maps over strains.
     in:
       input_type|input: dustmasker/output
-      input_type|genome_file_opts|genome: sizes_cut/out_file1
+      input_type|genome_file_opts|genome: sizes_cut/output
     state:
       input_type:
         input_type_select: bed
@@ -241,6 +259,12 @@ steps:
       report:
         report_select: hist
         max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
     position: {top: 0, left: 2550}
   gcov_window:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
@@ -248,7 +272,7 @@ steps:
     doc: Genome coverage (max depth 1) of windowmasker intervals; maps over strains.
     in:
       input_type|input: windowmasker/output
-      input_type|genome_file_opts|genome: sizes_cut/out_file1
+      input_type|genome_file_opts|genome: sizes_cut/output
     state:
       input_type:
         input_type_select: bed
@@ -257,6 +281,12 @@ steps:
       report:
         report_select: hist
         max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
     position: {top: 220, left: 2550}
   gcov_tantan:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
@@ -264,7 +294,7 @@ steps:
     doc: Genome coverage (max depth 1) of tantan intervals; maps over strains.
     in:
       input_type|input: tantan/output
-      input_type|genome_file_opts|genome: sizes_cut/out_file1
+      input_type|genome_file_opts|genome: sizes_cut/output
     state:
       input_type:
         input_type_select: bed
@@ -273,6 +303,12 @@ steps:
       report:
         report_select: hist
         max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
     position: {top: 660, left: 2550}
   gcov_fastan:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
@@ -280,7 +316,7 @@ steps:
     doc: Genome coverage (max depth 1) of fastan tandem intervals; maps over strains.
     in:
       input_type|input: fastan/output
-      input_type|genome_file_opts|genome: sizes_cut/out_file1
+      input_type|genome_file_opts|genome: sizes_cut/output
     state:
       input_type:
         input_type_select: bed
@@ -289,6 +325,12 @@ steps:
       report:
         report_select: hist
         max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
     position: {top: 880, left: 2550}
   gcov_union:
     tool_id: toolshed.g2.bx.psu.edu/repos/iuc/bedtools/bedtools_genomecoveragebed/2.31.1
@@ -296,7 +338,7 @@ steps:
     doc: Genome coverage (max depth 1) of the merged union intervals; maps over strains.
     in:
       input_type|input: merge_bed/output
-      input_type|genome_file_opts|genome: sizes_cut/out_file1
+      input_type|genome_file_opts|genome: sizes_cut/output
     state:
       input_type:
         input_type_select: bed
@@ -305,9 +347,15 @@ steps:
       report:
         report_select: hist
         max: 1
+      split: false
+      strand: ''
+      d: false
+      dz: false
+      five: false
+      three: false
     position: {top: 440, left: 2550}
   masking_table:
-    tool_id: masking_table
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/masking_table/masking_table/1.0.0+galaxy0
     label: masking_table
     doc: >-
       Pivot the five per-strain genomecov outputs into one Sample x masker
@@ -320,18 +368,3 @@ steps:
       fastan: gcov_fastan/output
       union: gcov_union/output
     position: {top: 360, left: 2900}
-  masking_multiqc:
-    tool_id: toolshed.g2.bx.psu.edu/repos/iuc/multiqc/multiqc/1.35+galaxy1
-    label: masking_multiqc
-    doc: MultiQC report rendering the masking_table matrix (custom content, table).
-    in:
-      results_0|software_cond|input: masking_table/output
-    state:
-      results:
-        - software_cond:
-            software: custom_content
-            plot_type: table
-            section_name: "Soft-masking proportions"
-            title: "Per-strain % genome masked"
-            description: "Percent of each genome soft-masked by dustmasker, windowmasker, tantan, fastan, and their union (bedtools genomecov)."
-    position: {top: 360, left: 3200}
