@@ -1,71 +1,56 @@
-# WF-B `softmask` (Phase B)
+# Low-complexity and tandem repeat soft-masking
 
-Soft-mask each assembly at the **union** of longdust + sdust low-complexity
-intervals, then index. Outputs feed Phases C, D, I.
+This workflow soft-masks (lower-cases) low-complexity sequence, tandem repeats and
+over-represented sequence in a list of genome assemblies. It runs four detectors on
+each assembly and masks the union of their intervals:
+
+- **NCBI dustmasker** (DUST): low-complexity sequence.
+- **tantan**: low-complexity sequence and short tandem repeats.
+- **FasTAN**: tandem arrays.
+- **NCBI WindowMasker**: over-represented sequence, from k-mer counts of the assembly itself.
+
+The workflow first removes any soft-masking that an assembly already has. Thus the
+output mask comes only from these four detectors. Each detector uses its tool defaults.
+The workflow has no inputs for detector parameters.
+
+This workflow does not use a repeat library to mask interspersed repeats (transposable
+elements). For that, use the IWC workflow
+[Repeat masking with RepeatModeler and RepeatMasker](https://github.com/galaxyproject/iwc/tree/main/workflows/repeatmasking).
+If you want both kinds of mask, run both workflows.
 
 ## Inputs
 
-| Input | Type | Notes |
-|---|---|---|
-| `assemblies` | `collection` (list) | Per-strain assembly FASTAs. Element identifier = strain name. Every step maps over this. |
-
-## Steps — wrappers vs IUC
-
-| Step | tool_id | Source | Action |
-|---|---|---|---|
-| `longdust` | `longdust` | **OUR wrapper** | Low-complexity intervals. **Output already trimmed to 3 cols (chrom,start,end) inside the tool** (awk in the command) — no separate awk-trim step needed. |
-| `sdust` | `sdust` | **OUR wrapper** | Symmetric-DUST low-complexity intervals (already 3-col BED). |
-| `union_cat` | `cat1` | Galaxy distro | Concatenate longdust + sdust BEDs per strain (zipped by element identifier). |
-| `sort_bed` | `bedtools_sortbed` | **IUC** | Sort intervals (required before merge). |
-| `merge_bed` | `bedtools_merge` | **IUC** | Merge/union overlapping intervals. |
-| `maskfasta` | `bedtools_maskfastabed` | **IUC** | `-soft` mask the assembly at merged intervals. |
-| `faidx` | `samtools_faidx` | **IUC** | `.fai` index of the soft-masked FASTA. |
-
-### Map-over / collection wiring
-
-- `longdust` and `sdust` both map over `assemblies` → two parallel BED
-  collections keyed by strain.
-- `union_cat` (`cat1`) takes `input1 = longdust/output` and
-  `queries_0|input2 = sdust/out_bed`; Galaxy zips the two collections by
-  element identifier (strain), concatenating each strain's two BEDs.
-- `maskfasta` takes `fasta = assemblies` and `bed = merge_bed/output` — two
-  collections zipped by strain.
-
-### Plan deviation (intentional)
-
-PIPELINE_PORT_PLAN lists a standalone "trim longdust to 3 cols via awk" step.
-The shipped `longdust` wrapper **already** emits 3-col BED (it pipes through
-`awk '{print $1,$2,$3}'` internally). So the explicit awk step is dropped —
-the union is just `cat → bedtools sort → bedtools merge`. Flagged here so the
-deviation from the plan text is visible.
+- **Genome assemblies**: a list collection of genome assembly FASTA files, with one
+  element for each assembly. The element identifier (for example, a strain name)
+  names each per-assembly output and its row in the percent masked table.
+  Every step maps over this collection.
 
 ## Outputs
 
-- `softmasked_fasta` — per-strain soft-masked FASTAs (low-complexity lower-cased).
-- `fasta_index` — per-strain `.fai`.
+All outputs except the table are list collections with one element for each assembly.
 
-> The `.sizes` file (`cut -f1,2` of `.fai`) is **not** emitted here; it is
-> produced downstream where consumed (C/D/I), per the plan.
+- **Soft-masked assemblies**: FASTA files. In each file, the union of the intervals from
+  all four detectors is lower-cased (bedtools maskfasta `-soft`).
+- **Soft-masked assembly index**: the samtools faidx index (`.fai`) of each soft-masked
+  FASTA.
+- **dustmasker intervals**, **WindowMasker intervals**, **tantan intervals**,
+  **FasTAN intervals**: BED6 interval tracks, one for each detector. You can load
+  them as UCSC hub tracks.
+- **Percent masked table**: one row for each assembly. It has one column for each
+  detector and one for the union. Each value is the percentage of the assembly that
+  the detector or the union masks (bedtools genomecov).
 
-## RUNNABILITY
+## How it works
 
-- **OUR wrappers loaded**: `longdust` (1.4+galaxy0) and `sdust` (0.1+galaxy0)
-  are installed in this Galaxy.
-- **IUC deps pending install** — `bedtools_sortbed`, `bedtools_merge`,
-  `bedtools_maskfastabed`, `samtools_faidx` must be installed before the
-  workflow runs. (`cat1` is a built-in distro tool, already present.)
-- **GPU / toga2**: not relevant to Phase B (no alignment/annotation here).
-- **Param caveat**: the IUC `state:` blocks are minimal (`soft_mask: true` on
-  maskfasta; sort/merge/faidx run on defaults). Reconcile against the installed
-  IUC tools' parameter names on first run.
+1. Upper-case each assembly to remove existing soft-masking.
+2. Run dustmasker, WindowMasker, tantan and FasTAN on the upper-cased assembly.
+3. Concatenate the four BED files. Sort them (bedtools sort) and merge them
+   (bedtools merge) into one set of union intervals.
+4. Soft-mask the upper-cased assembly at the union intervals (bedtools maskfasta).
+   Index the result (samtools faidx).
+5. Compute the genome coverage of each detector's intervals and of the union
+   (bedtools genomecov). Pivot the results into the percent masked table.
 
-## Lint
+## Related resources
 
-```
-planemo workflow_lint workflows/softmask/softmask.gxwf.yml
-# WARNING: Workflow missing test cases.
-# CHECK: All tool ids appear to be valid.
-```
-
-(Only the standard "missing test cases" warning; no creator/license/annotation/
-schema warnings; all tool ids valid.)
+We know of no tutorial for this workflow yet.

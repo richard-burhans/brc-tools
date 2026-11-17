@@ -1,0 +1,11 @@
+version: 1.2
+workflows:
+- name: low-complexity-softmasking
+  subclass: Galaxy
+  publish: true
+  primaryDescriptorPath: /softmask.gxwf.yml
+  authors:
+  - name: Anton Nekrutenko
+    orcid: 0000-0002-5987-8032
+  - name: Richard Burhans
+    orcid: 0009-0006-5949-0958
