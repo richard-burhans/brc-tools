@@ -5,10 +5,11 @@ doc: >-
   low-complexity, tandem and over-represented sequence: NCBI dustmasker, NCBI
   WindowMasker, tantan and FasTAN. It first removes any soft-masking already present. Then
   bedtools maskfasta (-soft) lower-cases the union of the four interval sets in each
-  assembly, and samtools faidx indexes the result. The workflow also outputs one BED6
-  interval track for each detector. It also outputs a table of the percentage of each
-  assembly that each detector and their union mask. The workflow keeps the collection
-  element identifiers (one for each assembly) throughout.
+  assembly, and samtools faidx indexes the result. The workflow also outputs one BED
+  interval track for each detector (BED6, except BED4 for WindowMasker). It also
+  outputs a table of the percentage of each assembly that each detector and their
+  union mask. The workflow keeps the collection element identifiers (one for each
+  assembly) throughout.
 creator:
   - class: Person
     identifier: https://orcid.org/0000-0002-5987-8032
@@ -43,9 +44,9 @@ outputs:
       dustmasker low-complexity intervals for each assembly (BED6). You can use them as a
       UCSC hub track.
   WindowMasker intervals:
-    outputSource: windowmasker/output
+    outputSource: windowmasker/mask_output
     doc: >-
-      WindowMasker over-represented-sequence intervals for each assembly (BED6). You can
+      WindowMasker over-represented-sequence intervals for each assembly (BED4). You can
       use them as a UCSC hub track.
   tantan intervals:
     outputSource: tantan/output
@@ -66,15 +67,32 @@ outputs:
 
 steps:
   uppercase:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/fasta_uppercase/fasta_uppercase/1.0.0+galaxy0
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/seqtk/seqtk_seq/1.5+galaxy2
     label: uppercase
     doc: >-
-      Remove any soft-masking that the assembly already has. Thus the output of this
-      workflow carries the mask of this workflow and nothing else. Each masker already
-      upper-cases its own working copy, so the BED tracks are de novo. maskfasta does not
-      upper-case its input, and this step fixes that.
+      Remove any soft-masking that the assembly already has (seqtk seq -U). Thus the
+      output of this workflow carries the mask of this workflow and nothing else. Each
+      masker already upper-cases its own working copy, so the BED tracks are de novo.
+      maskfasta does not upper-case its input, and this step fixes that.
     in:
-      input: Genome assemblies
+      in_file: Genome assemblies
+    state:
+      q: 0
+      X: 255
+      n: ''
+      l: 0
+      Q: 33
+      s: 11
+      f: 1.0
+      L: 0
+      c: false
+      direction: forward
+      A: false
+      C: false
+      N: false
+      U: true
+      x1: false
+      x2: false
     position: {top: 170, left: 150}
   dustmasker:
     tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/dustmasker/dustmasker/2.17.0+galaxy0
@@ -83,7 +101,7 @@ steps:
       NCBI DUST finds low-complexity intervals and writes them as content-annotated BED6.
       The step maps over assemblies.
     in:
-      input: uppercase/output
+      input: uppercase/default
     position: {top: 0, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -96,26 +114,38 @@ steps:
           tags: DustMasker
         action_type: TagDatasetAction
         output_name: output
+  windowmasker_mkcounts:
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/windowmasker/windowmasker_mkcounts/2.17.0+galaxy1
+    label: windowmasker_mkcounts
+    doc: >-
+      NCBI WindowMasker mk_counts counts the k-mer units of each assembly. The ustat step
+      uses these counts. The step maps over assemblies.
+    in:
+      fasta_input: uppercase/default
+    position: {top: 220, left: 300}
   windowmasker:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/windowmasker/windowmasker/2.17.0+galaxy0
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/windowmasker/windowmasker_ustat/2.17.0+galaxy1
     label: windowmasker
     doc: >-
-      NCBI WindowMasker finds genome-frequency repeats and writes them as BED6. The step
-      maps over assemblies.
+      NCBI WindowMasker ustat uses the unit counts to find genome-frequency repeats and
+      writes them as BED. The step maps over assemblies.
     in:
-      input: uppercase/output
-    position: {top: 220, left: 300}
+      fasta_input: uppercase/default
+      mkcount_input: windowmasker_mkcounts/mkcount_output
+    state:
+      output_format: interval
+    position: {top: 220, left: 480}
     post_job_actions:
-      RenameDatasetActionoutput:
+      RenameDatasetActionmask_output:
         action_arguments:
-          newname: 'hub track: windowmasker repeats (BED6)'
+          newname: 'hub track: windowmasker repeats (BED)'
         action_type: RenameDatasetAction
-        output_name: output
-      TagDatasetActionoutput:
+        output_name: mask_output
+      TagDatasetActionmask_output:
         action_arguments:
           tags: WindowMasker
         action_type: TagDatasetAction
-        output_name: output
+        output_name: mask_output
   tantan:
     tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/tantan/tantan/51+galaxy0
     label: tantan
@@ -123,7 +153,7 @@ steps:
       tantan finds gentle low-complexity intervals and writes them as BED6. The step maps
       over assemblies.
     in:
-      input: uppercase/output
+      input: uppercase/default
     position: {top: 660, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -142,7 +172,7 @@ steps:
     doc: >-
       FASTAN finds tandem arrays and writes them as BED6. The step maps over assemblies.
     in:
-      input: uppercase/output
+      input: uppercase/default
     position: {top: 830, left: 300}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -159,12 +189,12 @@ steps:
     tool_id: cat1
     label: union_cat
     doc: >-
-      Concatenate the four per-strain BED6 interval sets into one set before sort and
-      merge. Galaxy zips the sets by element identifier. This step uses a Galaxy distro
+      Concatenate the four per-strain BED interval sets into one set before sort and
+      merge. Merge uses only the first three columns. Galaxy zips the sets by element identifier. This step uses a Galaxy distro
       tool.
     in:
       input1: dustmasker/output
-      queries_0|input2: windowmasker/output
+      queries_0|input2: windowmasker/mask_output
       queries_1|input2: tantan/output
       queries_2|input2: fastan/output
     position: {top: 420, left: 650}
@@ -183,7 +213,7 @@ steps:
       Index the upper-cased FASTA (.fai). The index supplies contig sizes to sort_bed and
       genomecov.
     in:
-      input: uppercase/output
+      input: uppercase/default
     position: {top: 420, left: 300}
   sizes_cut:
     tool_id: toolshed.g2.bx.psu.edu/repos/bgruening/text_processing/tp_cut_tool/9.11+galaxy0
@@ -237,11 +267,11 @@ steps:
       Soft-mask the UPPER-CASED assembly at the merged union intervals (-soft). This step
       uses IUC bedtools. The fasta input is the upper-cased assembly and the bed input is
       the merged union, both per strain. Galaxy zips them by strain. The step reads
-      `uppercase/output` rather than `assemblies`. Thus the published FASTA carries only
+      `uppercase/default` rather than `assemblies`. Thus the published FASTA carries only
       the mask of this workflow, not its union with the mask that the assembly already
       had.
     in:
-      fasta: uppercase/output
+      fasta: uppercase/default
       input: merge_bed/output
     state:
       soft: true
@@ -309,7 +339,7 @@ steps:
       Compute the genome coverage (max depth 1) of the windowmasker intervals. The step
       maps over strains.
     in:
-      input_type|input: windowmasker/output
+      input_type|input: windowmasker/mask_output
       input_type|genome_file_opts|genome: sizes_cut/output
     state:
       input_type:
