@@ -128,12 +128,15 @@ steps:
     label: windowmasker
     doc: >-
       NCBI WindowMasker ustat uses the unit counts to find genome-frequency repeats and
-      writes them as BED. The step maps over assemblies.
+      writes them as BED. DUST is off, because dustmasker runs as its own detector. The step
+      maps over assemblies.
     in:
       fasta_input: uppercase/default
       mkcount_input: windowmasker_mkcounts/mkcount_output
     state:
       output_format: interval
+      use_dust:
+        use_dust_selector: "no"
     position: {top: 220, left: 480}
     post_job_actions:
       RenameDatasetActionmask_output:
