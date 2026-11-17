@@ -40,8 +40,8 @@ outputs:
   dustmasker intervals:
     outputSource: dustmasker/output
     doc: >-
-      dustmasker low-complexity intervals for each assembly (BED6). You can use them as a
-      UCSC hub track.
+      dustmasker low-complexity intervals for each assembly (BED6, with the repeat unit
+      as name and purity as score). You can use them as a UCSC hub track.
   WindowMasker intervals:
     outputSource: windowmasker/output
     doc: >-
@@ -50,13 +50,13 @@ outputs:
   tantan intervals:
     outputSource: tantan/output
     doc: >-
-      tantan low-complexity intervals for each assembly (BED6). You can use them as a UCSC
-      hub track.
+      tantan low-complexity intervals for each assembly (BED6, with the repeat unit as
+      name and purity as score). You can use them as a UCSC hub track.
   FasTAN intervals:
     outputSource: fastan/output
     doc: >-
-      FasTAN tandem-array intervals for each assembly (BED6). You can use them as a UCSC
-      hub track.
+      FasTAN tandem-array intervals for each assembly (BED6, with the unit length as name
+      and divergence as score). You can use them as a UCSC hub track.
   Percent masked table:
     outputSource: masking_table/output
     doc: >-
@@ -94,15 +94,29 @@ steps:
       x1: false
       x2: false
     position: {top: 170, left: 150}
+  dustmasker_intervals:
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/ncbi_blast_plus/ncbi_dustmasker_wrapper/2.17.0+galaxy0
+    label: dustmasker_intervals
+    doc: >-
+      NCBI dustmasker (DUST) finds low-complexity intervals and writes them as BED. The
+      step maps over assemblies.
+    in:
+      db_opts|subject: uppercase/default
+    state:
+      db_opts:
+        db_opts_selector: file
+      outformat: bed
+    position: {top: 0, left: 300}
   dustmasker:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/dustmasker/dustmasker/2.17.0+galaxy0
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/lc_classify/lc_classify/1.0.0+galaxy0
     label: dustmasker
     doc: >-
-      NCBI DUST finds low-complexity intervals and writes them as content-annotated BED6.
-      The step maps over assemblies.
+      lc_classify annotates each dustmasker interval with its repeat unit (name) and
+      purity (score) and writes sorted BED6. The step maps over assemblies.
     in:
-      input: uppercase/default
-    position: {top: 0, left: 300}
+      input_fasta: uppercase/default
+      intervals: dustmasker_intervals/outfile
+    position: {top: 0, left: 460}
     post_job_actions:
       RenameDatasetActionoutput:
         action_arguments:
@@ -143,8 +157,7 @@ steps:
     label: windowmasker
     doc: >-
       lc_classify annotates each WindowMasker interval with its repeat unit (name) and
-      purity (score) and writes sorted BED6. Thus all four detectors feed the union as
-      BED6. The step maps over assemblies.
+      purity (score) and writes sorted BED6. The step maps over assemblies.
     in:
       input_fasta: uppercase/default
       intervals: windowmasker_ustat/mask_output
@@ -160,15 +173,28 @@ steps:
           tags: WindowMasker
         action_type: TagDatasetAction
         output_name: output
-  tantan:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/tantan/tantan/51+galaxy0
-    label: tantan
+  tantan_intervals:
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/tantan/tantan/51+galaxy1
+    label: tantan_intervals
     doc: >-
-      tantan finds gentle low-complexity intervals and writes them as BED6. The step maps
-      over assemblies.
+      tantan finds gentle low-complexity intervals and writes them as BED (-f3). The step
+      maps over assemblies.
     in:
       input: uppercase/default
+    state:
+      output_type:
+        f: "3"
     position: {top: 660, left: 300}
+  tantan:
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/lc_classify/lc_classify/1.0.0+galaxy0
+    label: tantan
+    doc: >-
+      lc_classify annotates each tantan interval with its repeat unit (name) and purity
+      (score) and writes sorted BED6. The step maps over assemblies.
+    in:
+      input_fasta: uppercase/default
+      intervals: tantan_intervals/output
+    position: {top: 660, left: 460}
     post_job_actions:
       RenameDatasetActionoutput:
         action_arguments:
@@ -181,10 +207,11 @@ steps:
         action_type: TagDatasetAction
         output_name: output
   fastan:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/fastan/fastan/0.8+galaxy0
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/fastan/fastan/0.8+galaxy1
     label: fastan
     doc: >-
-      FASTAN finds tandem arrays and writes them as BED6. The step maps over assemblies.
+      FasTAN finds tandem arrays and writes them as BED6, with the unit length as name
+      and the divergence as score. The step maps over assemblies.
     in:
       input: uppercase/default
     position: {top: 830, left: 300}
