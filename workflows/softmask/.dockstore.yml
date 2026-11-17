@@ -4,6 +4,8 @@ workflows:
   subclass: Galaxy
   publish: true
   primaryDescriptorPath: /softmask.gxwf.yml
+  testParameterFiles:
+  - /softmask.gxwf-tests.yml
   authors:
   - name: Anton Nekrutenko
     orcid: 0000-0002-5987-8032

@@ -1,0 +1,111 @@
+- doc: >-
+    Two assemblies cut from Cannabis sativa cs10 (NC_044378.1). cs10_A has two
+    records and all four detectors fire on it. cs10_B has one record on which FasTAN
+    finds nothing, so the empty-detector path through union and masking_table is
+    exercised. Both inputs arrive partly soft-masked (lower-case from NCBI).
+  job:
+    Genome assemblies:
+      class: Collection
+      collection_type: list
+      elements:
+        - class: File
+          identifier: cs10_A
+          path: test-data/cs10_A.fa
+          filetype: fasta
+          hashes:
+            - hash_function: SHA-1
+              hash_value: 651a21d6ba51eec5ee4487bd4bd501c21e344673
+        - class: File
+          identifier: cs10_B
+          path: test-data/cs10_B.fa
+          filetype: fasta
+          hashes:
+            - hash_function: SHA-1
+              hash_value: c73c12db98edcc92b5f0e5cc09ac3de81edb2345
+  outputs:
+    Soft-masked assemblies:
+      class: Collection
+      element_count: 2
+      element_tests:
+        cs10_A:
+          asserts:
+            - has_n_lines: {n: 802}
+            - has_line: {line: ">cs10_12000001_12020000"}
+            - has_line: {line: ">cs10_28000001_28020000"}
+            # Lower-case in the input; only the dustmasker polyC run stays masked.
+            - has_line: {line: "TCGGTTATATAGACCCATGGTcccccccACTAATTCAGATAATATTACTT"}
+            - has_text_matching: {expression: "[acgt]{20}"}
+        cs10_B:
+          asserts:
+            - has_n_lines: {n: 401}
+            - has_line: {line: ">cs10_57000001_57020000"}
+            - has_line: {line: "AAATTAattaatttaattaTGATATTTAGAATTGAAATAggaataGTaaa"}
+            # Lower-case in the input and outside every interval: upper-cased.
+            - has_line: {line: "CACTTGGTTTTTGCAGTTTTCACAATTTTTATTTCTATTTTCTCAAAAAC"}
+    Soft-masked assembly index:
+      class: Collection
+      element_count: 2
+      element_tests:
+        cs10_A:
+          asserts:
+            - has_n_lines: {n: 2}
+            - has_line: {line: "cs10_12000001_12020000\t20000\t24\t50\t51"}
+            - has_line: {line: "cs10_28000001_28020000\t20000\t20448\t50\t51"}
+        cs10_B:
+          asserts:
+            - has_n_lines: {n: 1}
+            - has_line: {line: "cs10_57000001_57020000\t20000\t24\t50\t51"}
+    dustmasker intervals:
+      class: Collection
+      element_count: 2
+      element_tests:
+        cs10_A:
+          asserts:
+            - has_n_lines: {n: 59}
+            - has_line: {line: "cs10_12000001_12020000\t1171\t1178\tpolyC\t1000\t."}
+        cs10_B:
+          asserts:
+            - has_n_lines: {n: 18}
+            - has_line: {line: "cs10_57000001_57020000\t18345\t18394\t(AATT)n\t694\t."}
+    WindowMasker intervals:
+      class: Collection
+      element_count: 2
+      element_tests:
+        cs10_A:
+          asserts:
+            - has_n_lines: {n: 156}
+            - has_line: {line: "cs10_12000001_12020000\t1316\t1328\t(TTAT)n\t833\t."}
+        cs10_B:
+          asserts:
+            - has_n_lines: {n: 19}
+            - has_line: {line: "cs10_57000001_57020000\t1083\t1093\t(TAA)n\t800\t."}
+    tantan intervals:
+      class: Collection
+      element_count: 2
+      element_tests:
+        cs10_A:
+          asserts:
+            - has_n_lines: {n: 180}
+            - has_line: {line: "cs10_12000001_12020000\t1355\t1361\t(AAATAT)n\t1000\t."}
+        cs10_B:
+          asserts:
+            - has_n_lines: {n: 59}
+            - has_line: {line: "cs10_57000001_57020000\t19764\t19789\t(TTTGAA)n\t600\t."}
+    FasTAN intervals:
+      class: Collection
+      element_count: 2
+      element_tests:
+        cs10_A:
+          asserts:
+            - has_n_lines: {n: 15}
+            - has_line: {line: "cs10_12000001_12020000\t2670\t3047\tu151\t620\t."}
+        cs10_B:
+          asserts:
+            # FasTAN finds no tandem array in this region.
+            - has_size: {value: 0}
+    Percent masked table:
+      asserts:
+        - has_n_lines: {n: 3}
+        - has_line: {line: "Sample\tdustmasker\twindowmasker\ttantan\tfastan\tunion"}
+        - has_line: {line: "cs10_A\t12.26\t10.52\t12.44\t9.24\t21.41"}
+        - has_line: {line: "cs10_B\t3.55\t1.01\t5.23\t0.00\t7.85"}
