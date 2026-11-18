@@ -95,17 +95,18 @@ steps:
       x2: false
     position: {top: 170, left: 150}
   dustmasker_intervals:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/ncbi_blast_plus/ncbi_dustmasker_wrapper/2.17.0+galaxy0
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/dustmasker/dustmasker/2.17.0+galaxy1
     label: dustmasker_intervals
     doc: >-
       NCBI dustmasker (DUST) finds low-complexity intervals and writes them as BED. The
       step maps over assemblies.
     in:
-      db_opts|subject: uppercase/default
+      input: uppercase/default
     state:
-      db_opts:
-        db_opts_selector: file
-      outformat: bed
+      window: 64
+      level: 20
+      linker: 1
+      output_format: bed
     position: {top: 0, left: 300}
   dustmasker:
     tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/lc_classify/lc_classify/1.0.0+galaxy0
@@ -115,7 +116,7 @@ steps:
       purity (score) and writes sorted BED6. The step maps over assemblies.
     in:
       input_fasta: uppercase/default
-      intervals: dustmasker_intervals/outfile
+      intervals: dustmasker_intervals/output
     position: {top: 0, left: 460}
     post_job_actions:
       RenameDatasetActionoutput:
@@ -470,16 +471,24 @@ steps:
       three: false
     position: {top: 440, left: 2550}
   masking_table:
-    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/masking_table/masking_table/1.0.0+galaxy1
+    tool_id: toolshed.g2.bx.psu.edu/repos/richard-burhans/genomecov_coverage_table/genomecov_coverage_table/1.0.0+galaxy0
     label: masking_table
     doc: >-
-      Pivot the five per-strain genomecov outputs into one Sample x masker percent-masked
-      table. This tool is locally authored and reads element identifiers. The header has no
-      leading '#'.
+      Pivot the five per-strain genomecov histograms into one Sample x masker
+      percent-masked table. Column order follows the repeat order below.
     in:
-      dustmasker: gcov_dust/output
-      windowmasker: gcov_window/output
-      tantan: gcov_tantan/output
-      fastan: gcov_fastan/output
-      union: gcov_union/output
+      columns_0|histograms: gcov_dust/output
+      columns_1|histograms: gcov_window/output
+      columns_2|histograms: gcov_tantan/output
+      columns_3|histograms: gcov_fastan/output
+      columns_4|histograms: gcov_union/output
+    state:
+      columns:
+      - label: dustmasker
+      - label: windowmasker
+      - label: tantan
+      - label: fastan
+      - label: union
+      min_depth: 1
+      decimals: 2
     position: {top: 360, left: 2900}
